@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "allowSyntheticDefaultImports": true,
+    "declaration": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "outDir": "dist",
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "target": "ES2023",
+    "baseUrl": ".",
+    "paths": {
+      "openclaw/plugin-sdk/*": ["/Users/bx/Workspace/openclaw-zero-token/src/plugin-sdk/*.ts"],
+      "../gateway/*": ["extensions/browser/src/gateway/*"],
+      "../infra/*": ["extensions/browser/src/infra/*"],
+      "../logging/*": ["extensions/browser/src/logging/*"],
+      "../../config/*": ["src/core/config/*"]
+    }
+  },
+  "include": ["src/**/*", "extensions/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

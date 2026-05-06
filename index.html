@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Zero Token</title>
+<style>
+  :root {
+    --bg: #0f0f0f;
+    --surface: #1a1a1a;
+    --surface2: #252525;
+    --border: #333;
+    --text: #e5e5e5;
+    --text2: #999;
+    --text3: #666;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --user-bg: #1d3b6b;
+    --green: #22c55e;
+    --red: #ef4444;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); height: 100vh; display: flex;
+  }
+
+  /* ── Sidebar ────────────────────────────── */
+  .sidebar {
+    width: 260px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sidebar-header {
+    padding: 20px; border-bottom: 1px solid var(--border);
+  }
+  .sidebar-header h1 { font-size: 16px; font-weight: 600; color: var(--text); }
+  .sidebar-header p { font-size: 12px; color: var(--text3); margin-top: 4px; }
+  .sidebar-models {
+    flex: 1; overflow-y: auto; padding: 12px;
+  }
+  .sidebar-models h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text3); padding: 8px 4px; margin-top: 8px;
+  }
+  .model-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: var(--radius-sm); cursor: pointer; transition: background .15s;
+    font-size: 13px; color: var(--text2); margin-bottom: 2px;
+  }
+  .model-item:hover { background: var(--surface2); }
+  .model-item.active { background: var(--accent); color: #fff; }
+  .model-item .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .model-item .dot.ok { background: var(--green); }
+  .model-item .dot.no { background: var(--red); }
+  .model-item .name { flex: 1; }
+  .model-item .badge { font-size: 10px; opacity: 0.6; }
+  .sidebar-footer {
+    padding: 12px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text3);
+  }
+  .sidebar-footer a { color: var(--accent); text-decoration: none; }
+
+  /* ── Main ──────────────────────────────── */
+  .main {
+    flex: 1; display: flex; flex-direction: column; min-width: 0;
+  }
+
+  /* ── Header ─────────────────────────────── */
+  .header {
+    padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .header .current-model { font-size: 14px; font-weight: 600; }
+  .header .model-info { font-size: 12px; color: var(--text2); }
+  .header .actions { display: flex; gap: 8px; }
+  .header .btn-icon {
+    background: none; border: 1px solid var(--border); color: var(--text2);
+    width: 34px; height: 34px; border-radius: var(--radius-sm); cursor: pointer;
+    font-size: 14px; display: flex; align-items: center; justify-content: center;
+  }
+  .header .btn-icon:hover { background: var(--surface2); color: var(--text); }
+
+  /* ── Messages ───────────────────────────── */
+  .messages {
+    flex: 1; overflow-y: auto; padding: 32px 24px;
+    display: flex; flex-direction: column; gap: 20px;
+    scroll-behavior: smooth;
+  }
+  .messages:empty::after {
+    content: ''; display: none;
+  }
+
+  /* Welcome */
+  .welcome {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 24px; padding: 48px 24px; color: var(--text2);
+  }
+  .welcome h2 { font-size: 24px; color: var(--text); font-weight: 500; }
+  .welcome p { font-size: 14px; max-width: 480px; text-align: center; line-height: 1.6; }
+  .welcome .model-cards { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .welcome .model-card {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 20px; cursor: pointer; transition: all .15s; min-width: 140px; text-align: center;
+  }
+  .welcome .model-card:hover { border-color: var(--accent); }
+  .welcome .model-card .mc-name { font-size: 14px; color: var(--text); margin-bottom: 4px; }
+  .welcome .model-card .mc-status { font-size: 11px; }
+  .welcome .model-card .mc-status.ok { color: var(--green); }
+
+  /* Message bubbles */
+  .msg-row { display: flex; gap: 12px; max-width: 85%; }
+  .msg-row.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg-row.assistant { align-self: flex-start; }
+  .msg-avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  .msg-row.user .msg-avatar { background: var(--accent); }
+  .msg-row.assistant .msg-avatar { background: var(--surface2); border: 1px solid var(--border); }
+  .msg-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .msg-text {
+    padding: 12px 16px; border-radius: var(--radius); line-height: 1.65;
+    white-space: pre-wrap; word-break: break-word; font-size: 14px;
+  }
+  .msg-row.user .msg-text { background: var(--user-bg); }
+  .msg-row.assistant .msg-text { background: var(--surface2); border: 1px solid var(--border); }
+  .msg-row.assistant .msg-text:has(+ .thinking-box) {
+    border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom: none;
+  }
+  .msg-time { font-size: 11px; color: var(--text3); padding: 0 4px; }
+  .msg-actions { display: flex; gap: 4px; padding: 0 4px; opacity: 0; transition: opacity .15s; }
+  .msg-row:hover .msg-actions { opacity: 1; }
+  .msg-actions button {
+    background: none; border: none; color: var(--text3); font-size: 11px;
+    cursor: pointer; padding: 2px 4px; border-radius: 4px;
+  }
+  .msg-actions button:hover { color: var(--text); background: var(--surface2); }
+
+  /* Thinking box */
+  .thinking-box {
+    border: 1px solid var(--border); border-top: none;
+    background: var(--surface); border-radius: 0 0 var(--radius) var(--radius);
+    overflow: hidden;
+  }
+  .thinking-box summary {
+    padding: 8px 16px; color: var(--text3); font-size: 12px;
+    cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px;
+  }
+  .thinking-box summary:hover { color: var(--text2); }
+  .thinking-box summary::before { content: '🧠'; font-size: 12px; }
+  .thinking-box .thinking-text {
+    padding: 0 16px 12px; color: var(--text3); font-size: 13px;
+    line-height: 1.6; white-space: pre-wrap; max-height: 280px; overflow-y: auto;
+  }
+
+  /* Loading */
+  .loading { display: flex; gap: 4px; padding: 12px 16px; }
+  .loading span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--text3);
+    animation: bounce 1.4s infinite ease-in-out both;
+  }
+  .loading span:nth-child(1) { animation-delay: -0.32s; }
+  .loading span:nth-child(2) { animation-delay: -0.16s; }
+  @keyframes bounce {
+    0%, 80%, 100% { transform: scale(0); }
+    40% { transform: scale(1); }
+  }
+
+  /* ── Input ──────────────────────────────── */
+  .input-area {
+    padding: 16px 24px; background: var(--surface); border-top: 1px solid var(--border);
+  }
+  .input-row { display: flex; gap: 10px; align-items: flex-end; }
+  .input-row textarea {
+    flex: 1; background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    padding: 12px 16px; border-radius: var(--radius); font-size: 14px;
+    font-family: inherit; resize: none; min-height: 46px; max-height: 200px;
+    line-height: 1.5; outline: none;
+    transition: border-color .15s;
+  }
+  .input-row textarea:focus { border-color: var(--accent); }
+  .input-row textarea::placeholder { color: var(--text3); }
+  .send-btn {
+    background: var(--accent); color: #fff; border: none;
+    padding: 12px 20px; border-radius: var(--radius); font-size: 14px;
+    cursor: pointer; font-weight: 500; white-space: nowrap;
+    transition: background .15s; height: 46px;
+  }
+  .send-btn:hover { background: var(--accent-hover); }
+  .send-btn:disabled { background: var(--border); color: var(--text3); cursor: not-allowed; }
+  .input-hint { font-size: 11px; color: var(--text3); margin-top: 8px; text-align: center; }
+
+  /* ── Mobile ────────────────────────────── */
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .msg-row { max-width: 95%; }
+    .header { padding: 12px 16px; }
+    .messages { padding: 16px; }
+    .input-area { padding: 12px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <h1>My Zero Token</h1>
+    <p>Zero-cost LLM gateway</p>
+  </div>
+  <div class="sidebar-models" id="sidebar-models">
+    <h3>可用模型</h3>
+    <div id="model-list">加载中...</div>
+  </div>
+  <div class="sidebar-footer">
+    <a href="#" onclick="window.open('/v1/models')">API →</a>
+    &nbsp;·&nbsp; port 3001
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+  <header class="header">
+    <div>
+      <div class="current-model" id="current-model-name">选择模型</div>
+      <div class="model-info" id="current-model-info"></div>
+    </div>
+    <div class="actions">
+      <button class="btn-icon" title="清空对话" onclick="clearChat()">↺</button>
+      <button class="btn-icon" title="切换模型" onclick="document.getElementById('model-list').scrollIntoView()">⇄</button>
+    </div>
+  </header>
+
+  <div class="messages" id="messages">
+    <div class="welcome" id="welcome">
+      <h2>👋 开始对话</h2>
+      <p>选择一个模型，发送消息即可开始。已授权的模型（绿点）自动加载凭证。</p>
+      <div class="model-cards" id="welcome-cards"></div>
+    </div>
+  </div>
+
+  <div class="input-area">
+    <div class="input-row">
+      <textarea id="input" rows="1" placeholder="输入消息... (Enter 发送, Shift+Enter 换行)" autocomplete="off"></textarea>
+      <button class="send-btn" id="send" disabled>发送</button>
+    </div>
+    <div class="input-hint" id="input-hint">请先在侧边栏选择一个模型</div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin;
+const $messages = document.getElementById('messages');
+const $input = document.getElementById('input');
+const $send = document.getElementById('send');
+const $welcome = document.getElementById('welcome');
+const $modelList = document.getElementById('model-list');
+const $welcomeCards = document.getElementById('welcome-cards');
+const $currentName = document.getElementById('current-model-name');
+const $currentInfo = document.getElementById('current-model-info');
+const $inputHint = document.getElementById('input-hint');
+const $cookieRow = document.getElementById('cookie-row');
+
+let chatHistory = [];
+let currentModel = '';
+let models = [];
+let isStreaming = false;
+
+// ── Cookie ─────────────────────────────────
+const savedCookie = localStorage.getItem('myzt_cookie');
+if (savedCookie && typeof $cookieRow !== 'undefined' && $cookieRow) {
+  $cookieRow.querySelector('input').value = savedCookie;
+}
+function getCookie() {
+  const el = document.querySelector('#cookie-row input');
+  return el ? el.value.trim() : '';
+}
+
+// ── Model loading ──────────────────────────
+async function loadModels() {
+  try {
+    const r = await fetch(API + '/v1/models');
+    const d = await r.json();
+    models = d.data || [];
+    renderModelList();
+    renderWelcomeCards();
+    if (models.length > 0 && !currentModel) {
+      selectModel(models.find(m => m.authorized)?.id || models[0].id);
+    }
+    // Auto-hide cookie input if any authorized
+    const hasAuth = models.some(m => m.authorized);
+    if (hasAuth && $cookieRow) $cookieRow.style.display = 'none';
+  } catch (e) {
+    $modelList.innerHTML = '<span style="color:var(--red)">加载失败</span>';
+  }
+}
+
+function renderModelList() {
+  $modelList.innerHTML = models.map(m => `
+    <div class="model-item ${m.id === currentModel ? 'active' : ''}" data-model="${m.id}" onclick="selectModel('${m.id}')">
+      <span class="dot ${m.authorized ? 'ok' : 'no'}"></span>
+      <span class="name">${m.id}</span>
+      <span class="badge">${m.authorized ? '已授权' : ''}</span>
+    </div>
+  `).join('');
+}
+
+function renderWelcomeCards() {
+  const authModels = models.filter(m => m.authorized).slice(0, 6);
+  $welcomeCards.innerHTML = authModels.map(m => `
+    <div class="model-card" onclick="selectModel('${m.id}'); $input.focus()">
+      <div class="mc-name">${m.id.split('/').pop()}</div>
+      <div class="mc-status ok">✓ 已授权</div>
+    </div>
+  `).join('');
+}
+
+function selectModel(id) {
+  currentModel = id;
+  const m = models.find(x => x.id === id);
+  $currentName.textContent = m ? m.id : '选择模型';
+  $currentInfo.textContent = m ? (m.authorized ? '✓ 已授权 · 自动加载凭证' : '⚠ 未授权，需手动输入 cookie') : '';
+  $send.disabled = !id;
+  $inputHint.textContent = id ? 'Enter 发送 · Shift+Enter 换行' : '请先选择模型';
+  renderModelList();
+  // Focus input
+  if (id) $input.focus();
+}
+
+// ── Message rendering ──────────────────────
+
+function timeStr() {
+  const d = new Date();
+  return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+}
+
+function addUserMsg(text) {
+  $welcome.style.display = 'none';
+  const row = document.createElement('div');
+  row.className = 'msg-row user';
+  row.innerHTML = `
+    <div class="msg-avatar">👤</div>
+    <div class="msg-body">
+      <div class="msg-text">${esc(text)}</div>
+      <div class="msg-time">${timeStr()}</div>
+    </div>
+  `;
+  $messages.appendChild(row);
+  scrollBottom();
+}
+
+function addAssistantBubble(content, thinking, isLoading) {
+  $welcome.style.display = 'none';
+  const row = document.createElement('div');
+  row.className = 'msg-row assistant';
+  row.id = isLoading ? 'loading-msg' : '';
+
+  let html = '<div class="msg-avatar">🤖</div><div class="msg-body">';
+  if (isLoading) {
+    html += '<div class="msg-text"><div class="loading"><span></span><span></span><span></span></div></div>';
+  } else if (thinking) {
+    html += `<details class="thinking-box" open><summary>思考过程 (${thinking.length} 字)</summary><div class="thinking-text">${esc(thinking)}</div></details>`;
+    html += `<div class="msg-text">${esc(content || '')}</div>`;
+  } else {
+    html += `<div class="msg-text">${esc(content || '')}</div>`;
+  }
+  html += `<div class="msg-time">${timeStr()}</div>`;
+  html += `<div class="msg-actions"><button onclick="copyText(this)">复制</button></div>`;
+  html += '</div>';
+
+  row.innerHTML = html;
+  $messages.appendChild(row);
+  scrollBottom();
+  return row;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function copyText(btn) {
+  const text = btn.closest('.msg-body')?.querySelector('.msg-text')?.textContent || '';
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '已复制';
+    setTimeout(() => btn.textContent = '复制', 1500);
+  });
+}
+
+function scrollBottom() {
+  requestAnimationFrame(() => { $messages.scrollTop = $messages.scrollHeight; });
+}
+
+// ── Thinking split (client-side) ──────────
+
+function splitThinking(text) {
+  const t = (text || '').trim();
+  if (!t || t.length < 80) return { content: t, thinking: '' };
+  const mi = t.indexOf(' response');
+  if (mi > 20) return { thinking: t.slice(0, mi).trim(), content: t.slice(mi + 9).trim() };
+  const re = /[.!?。！？\n](?=\s*[A-Z\u4e00-\u9fff])/g;
+  const pts = []; let m;
+  while ((m = re.exec(t)) !== null) pts.push(m.index + 1);
+  if (pts.length < 3) return { content: t, thinking: '' };
+  let best = -1, bestS = 0;
+  for (const p of pts) {
+    const a = t.slice(p).trimStart();
+    let s = 0;
+    if (/^(你好|您好|Hello\b|Hi\b|Sure\b|当然|Here|以下|好的|没问题)/i.test(a)) s = 50;
+    if (s > bestS) { bestS = s; best = p; }
+  }
+  if (best > 0 && bestS >= 50) return { thinking: t.slice(0, best).trim(), content: t.slice(best).trim() };
+  return { content: t, thinking: '' };
+}
+
+// ── Send message ───────────────────────────
+
+async function sendMessage() {
+  const content = $input.value.trim();
+  if (!content || !currentModel || isStreaming) return;
+
+  addUserMsg(content);
+  $input.value = '';
+  $input.style.height = 'auto';
+  chatHistory.push({ role: 'user', content });
+  isStreaming = true;
+  $send.disabled = true;
+
+  const loadingRow = addAssistantBubble('', '', true);
+  let fullText = '', fullThinking = '';
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const cookie = getCookie();
+    if (cookie) headers['x-cookie'] = cookie;
+
+    const resp = await fetch(API + '/v1/chat/completions', {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: currentModel, messages: chatHistory, stream: true }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: { message: 'HTTP ' + resp.status } }));
+      loadingRow.remove();
+      showError(err.error?.message || 'Request failed');
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const d = line.slice(6);
+        if (d === '[DONE]') continue;
+        try {
+          const p = JSON.parse(d);
+          const delta = p.choices?.[0]?.delta;
+          if (delta?.reasoning_content) fullThinking += delta.reasoning_content;
+          if (delta?.content) fullText += delta.content;
+
+          // Update loading row in place
+          loadingRow.innerHTML = '';
+          const body = loadingRow.querySelector('.msg-body') || loadingRow;
+          let h = '<div class="msg-avatar">🤖</div><div class="msg-body">';
+          const curThink = fullThinking || splitThinking(fullText).thinking;
+          const curText = fullThinking ? fullText : splitThinking(fullText).content;
+          if (curThink) {
+            h += `<details class="thinking-box" open><summary>思考中... (${curThink.length} 字)</summary><div class="thinking-text">${esc(curThink)}</div></details>`;
+          }
+          h += `<div class="msg-text">${esc(curText || '...')}</div>`;
+          h += `<div class="msg-time">${timeStr()}</div></div>`;
+          loadingRow.innerHTML = h;
+          scrollBottom();
+        } catch {}
+      }
+    }
+
+    // Final bubble
+    loadingRow.remove();
+    const split = splitThinking(fullText);
+    const finalThink = fullThinking || split.thinking;
+    const finalText = fullThinking ? fullText : (split.content || fullText);
+    const row = addAssistantBubble(finalText, finalThink, false);
+    // Collapse thinking after done
+    setTimeout(() => {
+      const details = row.querySelector('.thinking-box');
+      if (details) details.open = false;
+    }, 500);
+    chatHistory.push({ role: 'assistant', content: fullText });
+  } catch (err) {
+    loadingRow.remove();
+    showError(err.message);
+  }
+  isStreaming = false;
+  $send.disabled = false;
+  $input.focus();
+}
+
+function showError(msg) {
+  const row = document.createElement('div');
+  row.className = 'msg-row assistant';
+  row.innerHTML = `<div class="msg-avatar">⚠️</div><div class="msg-body"><div class="msg-text" style="color:var(--red)">${esc(msg)}</div></div>`;
+  $messages.appendChild(row);
+  scrollBottom();
+}
+
+function clearChat() {
+  chatHistory = [];
+  $messages.innerHTML = '';
+  $messages.appendChild($welcome);
+  $welcome.style.display = 'flex';
+  renderWelcomeCards();
+}
+
+// ── Input auto-resize ──────────────────────
+$input.addEventListener('input', () => {
+  $input.style.height = 'auto';
+  $input.style.height = Math.min($input.scrollHeight, 200) + 'px';
+});
+
+// ── Events ─────────────────────────────────
+$send.addEventListener('click', sendMessage);
+$input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+// ── Init ───────────────────────────────────
+loadModels();
+</script>
+</body>
+</html>
