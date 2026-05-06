@@ -73,7 +73,7 @@ app.get('/v1/models', (_req: Request, res: Response) => {
 });
 
 app.post('/v1/chat/completions', async (req: Request, res: Response) => {
-  const { model, messages, stream = false } = req.body;
+  const { model, messages, stream = false, tools, tool_choice } = req.body;
 
   if (!model) {
     return res.status(400).json({
@@ -101,7 +101,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   try {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
-    const context = { messages };
+    const context = { messages, tools: tools || [], tool_choice };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -113,8 +113,9 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
       res.setHeader('x-request-id', chatId);
 
       let hasContent = false;
+      let currentToolCalls: Array<{ index: number; id: string; name: string; arguments: string }> = [];
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
-        const evt = event as { type: string; delta?: string; contentIndex?: number };
+        const evt = event as { type: string; delta?: string; contentIndex?: number; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
         if (evt.type === 'thinking_delta') {
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
@@ -127,7 +128,6 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
             choices: [{ index: 0, delta: { role: 'assistant', content: evt.delta }, finish_reason: null }],
           })}\n\n`);
         } else if (evt.type === 'text_start') {
-          // First non-empty text delta acts as role indicator
           if (evt.delta) {
             hasContent = true;
             res.write(`data: ${JSON.stringify({
@@ -135,8 +135,23 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
               choices: [{ index: 0, delta: { role: 'assistant', content: evt.delta }, finish_reason: null }],
             })}\n\n`);
           }
+        } else if (evt.type === 'toolcall_start') {
+          const tc = evt.toolCall!;
+          currentToolCalls.push({ index: currentToolCalls.length, id: tc.id, name: tc.name, arguments: '' });
+          res.write(`data: ${JSON.stringify({
+            id: chatId, object: 'chat.completion.chunk', created, model,
+            choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: tc.id, type: 'function', function: { name: tc.name, arguments: '' } }] }, finish_reason: null }],
+          })}\n\n`);
+        } else if (evt.type === 'toolcall_delta') {
+          const ct = currentToolCalls[currentToolCalls.length - 1];
+          if (ct) ct.arguments += evt.delta || '';
+          res.write(`data: ${JSON.stringify({
+            id: chatId, object: 'chat.completion.chunk', created, model,
+            choices: [{ index: 0, delta: { tool_calls: [{ index: (currentToolCalls.length - 1), function: { arguments: evt.delta || '' } }] }, finish_reason: null }],
+          })}\n\n`);
         } else if (evt.type === 'done') {
-          const finishReason = (evt as Record<string, unknown>).stopReason as string || 'stop';
+          const stopReason = (evt as Record<string, unknown>).stopReason as string || 'stop';
+          const finishReason = stopReason === 'toolUse' ? 'tool_calls' : stopReason;
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
@@ -158,17 +173,21 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
       let fullThinking = '';
       let finishReason = 'stop';
       let errorMsg = '';
+      const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as {
           type: string; delta?: string;
-          message?: { content?: Array<{ type: string; text?: string; thinking?: string }>; stopReason?: string };
+          message?: { content?: Array<{ type: string; text?: string; thinking?: string; name?: string; arguments?: Record<string, unknown>; id?: string }>; stopReason?: string };
           stopReason?: string;
+          toolCall?: { id: string; name: string; arguments: Record<string, unknown> };
         };
         if (evt.type === 'text_delta') {
           fullContent += evt.delta || '';
         } else if (evt.type === 'thinking_delta') {
           fullThinking += evt.delta || '';
+        } else if (evt.type === 'toolcall_end' && evt.toolCall) {
+          toolCalls.push(evt.toolCall);
         } else if (evt.type === 'error') {
           const err = event as Record<string, unknown>;
           errorMsg = (err.error as Record<string, unknown>)?.errorMessage as string
@@ -179,18 +198,33 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
             for (const part of evt.message.content) {
               if (part.type === 'text' && part.text) fullContent = part.text;
               else if (part.type === 'thinking' && part.thinking) fullThinking = part.thinking;
+              else if (part.type === 'toolCall' && part.name) {
+                toolCalls.push({ id: (part as Record<string, string>).id || '', name: part.name, arguments: part.arguments || {} });
+              }
             }
           }
         }
       }
 
-      if (errorMsg && !fullContent) {
+      if (errorMsg && !fullContent && toolCalls.length === 0) {
         return res.status(502).json({
           error: { message: errorMsg, type: 'api_error' },
         });
       }
 
-      // OpenAI-compatible response
+      // Build OpenAI-compatible response
+      const message: Record<string, unknown> = { role: 'assistant' };
+      if (fullContent) message.content = fullContent;
+      if (fullThinking) message.reasoning_content = fullThinking;
+      if (toolCalls.length > 0) {
+        message.tool_calls = toolCalls.map((tc, i) => ({
+          index: i,
+          id: tc.id || `call_${i}`,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+        }));
+      }
+
       const responseBody: Record<string, unknown> = {
         id: chatId,
         object: 'chat.completion',
@@ -198,20 +232,11 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         model,
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: fullContent },
-          finish_reason: finishReason,
+          message,
+          finish_reason: finishReason === 'toolUse' ? 'tool_calls' : finishReason,
         }],
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       };
-
-      // Include reasoning/thinking if present (OpenAI o1-style)
-      if (fullThinking) {
-        (responseBody.choices as Array<Record<string, unknown>>)[0].message = {
-          role: 'assistant',
-          content: fullContent,
-          reasoning_content: fullThinking,
-        };
-      }
 
       res.json(responseBody);
     }
