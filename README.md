@@ -215,22 +215,33 @@ print(response.choices[0].message.content)
 auth-profiles.json ──→ 网关自动加载 cookie
 ```
 
-## 文件结构
+## 项目结构
 
 ```
-src/
-  index.ts                  # Express 网关 + OpenAI 兼容 API
-  onboard-webauth.ts        # Web 模型授权向导
-  streams/                  # 流式响应处理
-    web-stream-factories.ts # 延迟加载工厂（按需动态 import）
-    *-web-stream.ts         # 供应商流式解析（原项目）
-    *-web-stream-http.ts    # 纯 HTTP / 浏览器 fetch 版本
-  providers/                # 供应商客户端
-    *-web-client.ts         # 纯 HTTP 客户端
-    *-web-client-browser.ts # 浏览器交互客户端
-    browser-fetch.ts        # 浏览器内 fetch 工具
-  tool-calling/             # 工具调用中间件
-  config/                   # 配置 stub（attach-only 模式）
+my-zero-token/
+  src/
+    index.ts                  # Express 网关 + OpenAI 兼容 API
+    onboard-webauth.ts        # Web 模型授权向导
+    streams/                  # 流式响应处理
+    providers/                # 供应商客户端
+    tool-calling/             # 工具调用中间件
+    config/                   # 配置 stub（attach-only 模式）
+  config/                     # 配置 stub（项目根，供 provider 导入）
+  extensions/                 # → openclaw-zero-token/extensions/browser (符号链接)
+  node_modules/openclaw/      # openclaw SDK 桩模块
+  start-chrome-debug.sh       # 启动 Chrome 调试模式
+  onboard.sh                  # Web 模型授权向导
+  server.sh                   # 网关管理 (start/stop/restart/status)
+```
+
+初始化时需要在 `/Users/bx/Workspace/` 创建两个符号链接，将外部导入路径解析到项目内：
+
+```bash
+# 浏览器扩展代码 (provider import "../../../extensions/..." → 此处)
+ln -sf $PWD/extensions /Users/bx/Workspace/extensions
+
+# openclaw SDK 桩 (扩展 import "openclaw/plugin-sdk/..." → 此处)
+ln -sf $PWD/node_modules/openclaw /Users/bx/Workspace/node_modules/openclaw
 ```
 
 ## 要求
