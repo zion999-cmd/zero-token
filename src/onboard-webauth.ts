@@ -132,7 +132,7 @@ const PROVIDERS: WebProvider[] = [
 
 // ── 工具函数 ──────────────────────────────────────────
 
-const STATE_DIR = "/Users/bx/Workspace/my-zero-token/.myzt-state";
+const STATE_DIR = new URL("../.myzt-state", import.meta.url).pathname;
 const AUTH_FILE = path.join(STATE_DIR, "auth-profiles.json");
 
 function ensureStateDir() {

@@ -17,11 +17,7 @@
     "target": "ES2023",
     "baseUrl": ".",
     "paths": {
-      "openclaw/plugin-sdk/*": ["/Users/bx/Workspace/openclaw-zero-token/src/plugin-sdk/*.ts"],
-      "../gateway/*": ["extensions/browser/src/gateway/*"],
-      "../infra/*": ["extensions/browser/src/infra/*"],
-      "../logging/*": ["extensions/browser/src/logging/*"],
-      "../../config/*": ["src/core/config/*"]
+      "../../config/*": ["config/*"]
     }
   },
   "include": ["src/**/*", "extensions/**/*"],
