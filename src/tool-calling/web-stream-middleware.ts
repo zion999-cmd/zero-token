@@ -158,8 +158,31 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     const injectTools =
       shouldInjectToolPrompt(api) && hasAgentTools && needsToolInjection(userMessage);
 
-    // Build the prompt: tool prompt (if applicable) + user message
-    const prompt = injectTools ? getToolPrompt(api) + userMessage : userMessage;
+    // Build the prompt: built-in tool prompt + user-defined tools + user message
+    let toolSection = "";
+    if (injectTools) {
+      toolSection = getToolPrompt(api);
+    }
+    // Append user-defined tools from the API request
+    if (hasAgentTools) {
+      const userTools = (context.tools || []) as Array<{
+        type: string;
+        function?: { name?: string; description?: string; parameters?: Record<string, unknown> };
+      }>;
+      if (userTools.length > 0) {
+        toolSection += "\n## User Tools\n";
+        for (const t of userTools) {
+          if (t.type === "function" && t.function?.name) {
+            toolSection += `- ${t.function.name}: ${t.function.description || ""}\n`;
+            if (t.function.parameters) {
+              toolSection += `  Parameters: ${JSON.stringify(t.function.parameters)}\n`;
+            }
+          }
+        }
+        toolSection += "\nUse <tool_call name=\"...\">...</tool_call> to call these tools.\n";
+      }
+    }
+    const prompt = toolSection + userMessage;
 
     console.log(
       `[WebStreamMiddleware] api=${api} injectTools=${injectTools} promptLen=${prompt.length} userMsgLen=${userMessage.length}`,

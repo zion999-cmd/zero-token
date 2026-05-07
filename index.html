@@ -142,6 +142,24 @@
   }
   .msg-actions button:hover { color: var(--text); background: var(--surface2); }
 
+  /* Tool call */
+  .tool-call {
+    margin: 4px 0; border: 1px solid #92400e; border-radius: var(--radius-sm);
+    background: #1a1206; overflow: hidden;
+  }
+  .tool-call summary {
+    padding: 8px 14px; color: #f59e0b; font-size: 12px; cursor: pointer;
+    font-family: monospace; display: flex; align-items: center; gap: 6px;
+  }
+  .tool-call .tool-args {
+    padding: 8px 14px; color: var(--text2); font-size: 12px;
+    font-family: monospace; white-space: pre-wrap; max-height: 120px; overflow-y: auto;
+  }
+  .tool-result {
+    margin: 4px 0; padding: 8px 14px; border: 1px solid #065f46; border-radius: var(--radius-sm);
+    background: #041a10; color: #34d399; font-size: 12px; font-family: monospace;
+  }
+
   /* Thinking box */
   .thinking-box {
     border: 1px solid var(--border); border-top: none;
@@ -232,6 +250,7 @@
       <div class="model-info" id="current-model-info"></div>
     </div>
     <div class="actions">
+      <button class="btn-icon" id="tools-btn" title="工具调用" onclick="toggleTools()" style="font-size:12px;width:auto;padding:0 12px;">🧰 工具</button>
       <button class="btn-icon" title="清空对话" onclick="clearChat()">↺</button>
       <button class="btn-icon" title="切换模型" onclick="document.getElementById('model-list').scrollIntoView()">⇄</button>
     </div>
@@ -271,6 +290,104 @@ let chatHistory = [];
 let currentModel = '';
 let models = [];
 let isStreaming = false;
+let toolsEnabled = false;
+
+// ── Test Tools ─────────────────────────────
+const TEST_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'calculator',
+      description: '计算数学表达式。支持 + - * / 和括号。例如: "2+3*4"',
+      parameters: {
+        type: 'object',
+        properties: {
+          expression: { type: 'string', description: '数学表达式，如 "2+3*4"' }
+        },
+        required: ['expression']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_current_time',
+      description: '获取当前日期和时间',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: '获取指定城市的天气（模拟）',
+      parameters: {
+        type: 'object',
+        properties: {
+          city: { type: 'string', description: '城市名称' }
+        },
+        required: ['city']
+      }
+    }
+  }
+];
+
+function toggleTools() {
+  toolsEnabled = !toolsEnabled;
+  const btn = document.getElementById('tools-btn');
+  if (toolsEnabled) {
+    btn.style.background = '#92400e';
+    btn.style.borderColor = '#f59e0b';
+    btn.style.color = '#f59e0b';
+    btn.textContent = '🧰 工具 ✓';
+  } else {
+    btn.style.background = '';
+    btn.style.borderColor = 'var(--border)';
+    btn.style.color = 'var(--text2)';
+    btn.textContent = '🧰 工具';
+  }
+}
+
+function executeTool(name, args) {
+  try {
+    switch (name) {
+      case 'calculator': {
+        const expr = String(args.expression || '').replace(/[^0-9+\-*/().%\s]/g, '');
+        if (!expr) return 'Error: no expression';
+        const result = Function('"use strict"; return (' + expr + ')')();
+        return String(result);
+      }
+      case 'get_current_time':
+        return new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+      case 'get_weather':
+        return `城市: ${args.city || '未知'} — ☀️ 晴，温度 22°C，湿度 45% (模拟)`;
+      default:
+        return `Tool "${name}" not available`;
+    }
+  } catch (e) {
+    return 'Error: ' + e.message;
+  }
+}
+
+function addToolMessage(toolCalls, results) {
+  const row = document.createElement('div');
+  row.className = 'msg-row assistant';
+  let html = '<div class="msg-avatar">🔧</div><div class="msg-body">';
+  for (let i = 0; i < toolCalls.length; i++) {
+    const tc = toolCalls[i];
+    const args = typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments);
+    html += `<details class="tool-call" open><summary>⚡ 调用: ${tc.function.name}</summary><div class="tool-args">${esc(args)}</div></details>`;
+    if (results[i] !== undefined) {
+      html += `<div class="tool-result">→ ${esc(String(results[i]))}</div>`;
+    }
+  }
+  html += '</div>';
+  row.innerHTML = html;
+  $messages.appendChild(row);
+  scrollBottom();
+}
+
+async function sendWithTools() { /* placeholder, real logic in sendMessage */ }
 
 // ── Cookie ─────────────────────────────────
 const savedCookie = localStorage.getItem('myzt_cookie');
@@ -420,6 +537,62 @@ function splitThinking(text) {
 
 // ── Send message ───────────────────────────
 
+async function callLLM(messages, onDelta) {
+  const headers = { 'Content-Type': 'application/json' };
+  const cookie = getCookie();
+  if (cookie) headers['x-cookie'] = cookie;
+
+  const body = { model: currentModel, messages, stream: true };
+  if (toolsEnabled) body.tools = TEST_TOOLS;
+
+  const resp = await fetch(API + '/v1/chat/completions', {
+    method: 'POST', headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: { message: 'HTTP ' + resp.status } }));
+    throw new Error(err.error?.message || 'Request failed');
+  }
+
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '', fullText = '', fullThinking = '';
+  const toolCalls = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const d = line.slice(6);
+      if (d === '[DONE]') continue;
+      try {
+        const p = JSON.parse(d);
+        const delta = p.choices?.[0]?.delta;
+        if (!delta) continue;
+        if (delta.reasoning_content) fullThinking += delta.reasoning_content;
+        if (delta.content) fullText += delta.content;
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index || 0;
+            if (!toolCalls[idx]) toolCalls[idx] = { id: tc.id || '', name: '', arguments: '' };
+            if (tc.id) toolCalls[idx].id = tc.id;
+            if (tc.function?.name) toolCalls[idx].name = tc.function.name;
+            if (tc.function?.arguments) toolCalls[idx].arguments += tc.function.arguments;
+          }
+        }
+        if (onDelta) onDelta({ fullText, fullThinking, toolCalls: toolCalls.filter(Boolean) });
+      } catch {}
+    }
+  }
+  return { content: fullText, thinking: fullThinking, toolCalls: toolCalls.filter(Boolean) };
+}
+
 async function sendMessage() {
   const content = $input.value.trim();
   if (!content || !currentModel || isStreaming) return;
@@ -432,75 +605,58 @@ async function sendMessage() {
   $send.disabled = true;
 
   const loadingRow = addAssistantBubble('', '', true);
-  let fullText = '', fullThinking = '';
 
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    const cookie = getCookie();
-    if (cookie) headers['x-cookie'] = cookie;
+    let msgs = [...chatHistory];
+    let maxRounds = 3;
 
-    const resp = await fetch(API + '/v1/chat/completions', {
-      method: 'POST', headers,
-      body: JSON.stringify({ model: currentModel, messages: chatHistory, stream: true }),
-    });
+    while (maxRounds-- > 0) {
+      const result = await callLLM(msgs, (s) => {
+        loadingRow.innerHTML = '';
+        const body = loadingRow.querySelector('.msg-body') || loadingRow;
+        let h = '<div class="msg-avatar">🤖</div><div class="msg-body">';
+        const ct = s.fullThinking || splitThinking(s.fullText).thinking;
+        const cx = s.fullThinking ? s.fullText : splitThinking(s.fullText).content;
+        if (ct) h += '<details class="thinking-box" open><summary>思考中... (' + ct.length + ' 字)</summary><div class="thinking-text">' + esc(ct) + '</div></details>';
+        h += '<div class="msg-text">' + esc(cx || '...') + '</div>';
+        for (const tc of s.toolCalls) {
+          h += '<details class="tool-call" open><summary>⚡ ' + esc(tc.name) + '</summary><div class="tool-args">' + esc(tc.arguments) + '</div></details>';
+        }
+        h += '<div class="msg-time">' + timeStr() + '</div></div>';
+        loadingRow.innerHTML = h;
+        scrollBottom();
+      });
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ error: { message: 'HTTP ' + resp.status } }));
       loadingRow.remove();
-      showError(err.error?.message || 'Request failed');
-      return;
-    }
 
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
+      if (result.toolCalls.length > 0) {
+        const results = result.toolCalls.map(tc => {
+          let args = {};
+          try { args = JSON.parse(tc.arguments); } catch {}
+          return executeTool(tc.name, args);
+        });
+        addToolMessage(result.toolCalls, results);
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const d = line.slice(6);
-        if (d === '[DONE]') continue;
-        try {
-          const p = JSON.parse(d);
-          const delta = p.choices?.[0]?.delta;
-          if (delta?.reasoning_content) fullThinking += delta.reasoning_content;
-          if (delta?.content) fullText += delta.content;
-
-          // Update loading row in place
-          loadingRow.innerHTML = '';
-          const body = loadingRow.querySelector('.msg-body') || loadingRow;
-          let h = '<div class="msg-avatar">🤖</div><div class="msg-body">';
-          const curThink = fullThinking || splitThinking(fullText).thinking;
-          const curText = fullThinking ? fullText : splitThinking(fullText).content;
-          if (curThink) {
-            h += `<details class="thinking-box" open><summary>思考中... (${curThink.length} 字)</summary><div class="thinking-text">${esc(curThink)}</div></details>`;
-          }
-          h += `<div class="msg-text">${esc(curText || '...')}</div>`;
-          h += `<div class="msg-time">${timeStr()}</div></div>`;
-          loadingRow.innerHTML = h;
-          scrollBottom();
-        } catch {}
+        const tcForHistory = result.toolCalls.map((tc, i) => ({
+          id: tc.id, type: 'function',
+          function: { name: tc.name, arguments: tc.arguments }
+        }));
+        msgs.push({ role: 'assistant', content: result.content || null, tool_calls: tcForHistory });
+        for (let i = 0; i < result.toolCalls.length; i++) {
+          msgs.push({ role: 'tool', tool_call_id: result.toolCalls[i].id, content: results[i] });
+        }
+        chatHistory = msgs;
+        continue;
       }
-    }
 
-    // Final bubble
-    loadingRow.remove();
-    const split = splitThinking(fullText);
-    const finalThink = fullThinking || split.thinking;
-    const finalText = fullThinking ? fullText : (split.content || fullText);
-    const row = addAssistantBubble(finalText, finalThink, false);
-    // Collapse thinking after done
-    setTimeout(() => {
-      const details = row.querySelector('.thinking-box');
-      if (details) details.open = false;
-    }, 500);
-    chatHistory.push({ role: 'assistant', content: fullText });
+      const split = splitThinking(result.content);
+      addAssistantBubble(
+        result.thinking ? result.content : (split.content || result.content),
+        result.thinking || split.thinking
+      );
+      chatHistory.push({ role: 'assistant', content: result.content });
+      break;
+    }
   } catch (err) {
     loadingRow.remove();
     showError(err.message);
@@ -510,23 +666,7 @@ async function sendMessage() {
   $input.focus();
 }
 
-function showError(msg) {
-  const row = document.createElement('div');
-  row.className = 'msg-row assistant';
-  row.innerHTML = `<div class="msg-avatar">⚠️</div><div class="msg-body"><div class="msg-text" style="color:var(--red)">${esc(msg)}</div></div>`;
-  $messages.appendChild(row);
-  scrollBottom();
-}
-
-function clearChat() {
-  chatHistory = [];
-  $messages.innerHTML = '';
-  $messages.appendChild($welcome);
-  $welcome.style.display = 'flex';
-  renderWelcomeCards();
-}
-
-// ── Input auto-resize ──────────────────────
+// // ── Input auto-resize ──────────────────────
 $input.addEventListener('input', () => {
   $input.style.height = 'auto';
   $input.style.height = Math.min($input.scrollHeight, 200) + 'px';
