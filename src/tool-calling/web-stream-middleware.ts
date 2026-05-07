@@ -160,28 +160,29 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     const injectTools = explicitToolRequest ||
       (shouldInjectToolPrompt(api) && hasAgentTools && needsToolInjection(userMessage));
 
-    // Build the prompt: built-in tool prompt + user-defined tools + user message
+    // Build the prompt
     let toolSection = "";
-    if (injectTools) {
+    // Only inject built-in tools when no user tools requested
+    if (injectTools && !explicitToolRequest) {
       toolSection = getToolPrompt(api);
     }
-    // Append user-defined tools from the API request
-    if (hasAgentTools) {
+    // Append user-defined tools
+    if (explicitToolRequest) {
       const userTools = (context.tools || []) as Array<{
         type: string;
         function?: { name?: string; description?: string; parameters?: Record<string, unknown> };
       }>;
-      if (userTools.length > 0) {
-        toolSection += "\n## User Tools\n";
-        for (const t of userTools) {
-          if (t.type === "function" && t.function?.name) {
-            toolSection += `- ${t.function.name}: ${t.function.description || ""}\n`;
-            if (t.function.parameters) {
-              toolSection += `  Parameters: ${JSON.stringify(t.function.parameters)}\n`;
-            }
-          }
+      const names: string[] = [];
+      for (const t of userTools) {
+        if (t.type === "function" && t.function?.name) {
+          names.push(t.function.name);
+          const props = (t.function.parameters?.properties || {}) as Record<string, unknown>;
+          const args = Object.keys(props).join(", ");
+          toolSection += `Tool: ${t.function.name}(${args}) — ${t.function.description || ""}\n`;
         }
-        toolSection += "\nUse <tool_call name=\"...\">...</tool_call> to call these tools.\n";
+      }
+      if (names.length > 0) {
+        toolSection += `\n`;
       }
     }
     const prompt = toolSection + userMessage;
