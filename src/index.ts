@@ -73,11 +73,13 @@ app.get('/v1/models', (_req: Request, res: Response) => {
 });
 
 app.post('/v1/chat/completions', async (req: Request, res: Response) => {
-  const { model, messages, stream = false, tools, tool_choice } = req.body;
+  // Accept but ignore OpenAI SDK params (web models don't support them)
+  const { model, messages, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop } = req.body;
+  void temperature; void max_tokens; void top_p; void n; void stop;
 
   if (!model) {
     return res.status(400).json({
-      error: { message: 'model is required', type: 'invalid_request_error', code: 'missing_model' },
+      error: { message: 'model is required', type: 'invalid_request_error', param: 'model', code: 'missing_model' },
     });
   }
 
@@ -86,7 +88,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
 
   if (!factory) {
     return res.status(400).json({
-      error: { message: `Unknown model: ${model}`, type: 'invalid_request_error', code: 'invalid_model' },
+      error: { message: `Unknown model: ${model}`, type: 'invalid_request_error', param: 'model', code: 'invalid_model' },
     });
   }
 
@@ -94,7 +96,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   if (!cookie) cookie = getCookieForProvider(apiId);
   if (!cookie) {
     return res.status(400).json({
-      error: { message: 'Authentication required. Run ./onboard.sh to authorize.', type: 'authentication_error' },
+      error: { message: 'Authentication required. Run ./onboard.sh to authorize.', type: 'authentication_error', param: null },
     });
   }
 
@@ -120,6 +122,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: evt.delta }, finish_reason: null }],
+            system_fingerprint: 'fp_myzt_001',
           })}\n\n`);
         } else if (evt.type === 'text_delta') {
           hasContent = true;
@@ -208,7 +211,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
 
       if (errorMsg && !fullContent && toolCalls.length === 0) {
         return res.status(502).json({
-          error: { message: errorMsg, type: 'api_error' },
+          error: { message: errorMsg, type: 'api_error', param: null },
         });
       }
 
@@ -230,6 +233,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         object: 'chat.completion',
         created,
         model,
+        system_fingerprint: 'fp_myzt_001',
         choices: [{
           index: 0,
           message,
@@ -244,7 +248,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     console.error('Chat error:', error);
     const errMsg = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({
-      error: { message: errMsg, type: 'api_error' },
+      error: { message: errMsg, type: 'api_error', param: null },
     });
   }
 });
