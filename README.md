@@ -292,7 +292,8 @@ my-zero-token/
 初始化时创建一个符号链接（provider 通过 `../../../extensions/` 导入，指向项目内的 extensions）：
 
 ```bash
-ln -sf $PWD/extensions /Users/bx/Workspace/extensions
+# Provider 通过 ../../../extensions/ 导入，需在项目父目录创建符号链接
+ln -sf $PWD/extensions "$(dirname $PWD)/extensions"
 ```
 
 ## 要求

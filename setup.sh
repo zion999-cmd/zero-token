@@ -16,9 +16,12 @@ pnpm install
 echo "→ 创建状态目录..."
 mkdir -p .myzt-state/agents/main/agent
 
-# 3. 创建 Workspace 级符号链接（provider 通过 ../../../extensions/ 导入）
-echo "→ 创建符号链接..."
-ln -sf "$SCRIPT_DIR/extensions" /Users/bx/Workspace/extensions
+# 3. 创建父目录级符号链接
+# Provider 通过 ../../../extensions/ 导入，解析到项目父目录
+# 例: <project>/src/providers/ → ../../.. → <parent>/
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+echo "→ 创建符号链接: $PARENT_DIR/extensions → $SCRIPT_DIR/extensions"
+ln -sf "$SCRIPT_DIR/extensions" "$PARENT_DIR/extensions"
 
 echo ""
 echo "✓ 初始化完成"
