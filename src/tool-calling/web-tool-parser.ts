@@ -46,7 +46,38 @@ export function extractToolCall(text: string): ParsedToolCall | null {
     return parseToolJson(xml[1]);
   }
 
-  // 4. Fuzzy repair: if text looks like a truncated tool_call JSON, try to fix it.
+  // 4. ReAct format: Action: tool_name\nAction Input: arg1="val1"
+  const reactMatch = text.match(/Action:\s*(\S+)\s*\n?\s*Action Input:\s*(.+?)(?:\n|$)/i);
+  if (reactMatch) {
+    const name = reactMatch[1];
+    const argsStr = reactMatch[2].trim();
+    const params: Record<string, unknown> = {};
+    // Try JSON first
+    try {
+      const parsed = JSON.parse(argsStr);
+      return { tool: name, parameters: parsed };
+    } catch {
+      // Try key="value" format
+      const kvRe = /(\w+)\s*=\s*"([^"]*)"/g;
+      let m;
+      while ((m = kvRe.exec(argsStr)) !== null) {
+        params[m[1]] = m[2];
+      }
+      if (Object.keys(params).length > 0) {
+        return { tool: name, parameters: params };
+      }
+    }
+  }
+
+  // 5. Function call JSON: {"name":"tool","arguments":{...}} (Grok, OpenAI format)
+  const funcMatch = text.match(/\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]+\})/);
+  if (funcMatch) {
+    try {
+      return { tool: funcMatch[1], parameters: JSON.parse(funcMatch[2]) };
+    } catch { /* fall through */ }
+  }
+
+  // 6. Fuzzy repair: if text looks like a truncated tool_call JSON, try to fix it.
   // Common issue: SSE stream drops the final "}" → {"tool":"exec","parameters":{"command":"ls"}
   const fuzzyMatch = text.match(/\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*\{([^}]*)\}/);
   if (fuzzyMatch) {

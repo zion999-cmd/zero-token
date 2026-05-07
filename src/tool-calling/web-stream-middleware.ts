@@ -18,7 +18,7 @@ import {
 } from "@mariozechner/pi-ai";
 import { stripInboundMeta } from "../streams/strip-inbound-meta.js";
 import { extractToolCall } from "./web-tool-parser.js";
-import { shouldInjectToolPrompt, getToolPrompt } from "./web-tool-prompt.js";
+import { shouldInjectToolPrompt, getToolPrompt, getUserToolPrompt, type UserToolDef } from "./web-tool-prompt.js";
 
 /**
  * Quick keyword check: does this message likely need tool use?
@@ -166,25 +166,24 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     if (injectTools && !explicitToolRequest) {
       toolSection = getToolPrompt(api);
     }
-    // Append user-defined tools
+    // Append user-defined tools with provider-specific prompt format
     if (explicitToolRequest) {
       const userTools = (context.tools || []) as Array<{
         type: string;
         function?: { name?: string; description?: string; parameters?: Record<string, unknown> };
       }>;
-      const names: string[] = [];
-      for (const t of userTools) {
-        if (t.type === "function" && t.function?.name) {
-          names.push(t.function.name);
-          const props = (t.function.parameters?.properties || {}) as Record<string, unknown>;
-          const args = Object.keys(props).join(", ");
-          toolSection += `Tool: ${t.function.name}(${args}) — ${t.function.description || ""}\n`;
-        }
-      }
-      if (names.length > 0) {
-        toolSection += `\n`;
+      const defs: UserToolDef[] = userTools
+        .filter(t => t.type === "function" && t.function?.name)
+        .map(t => ({
+          name: t.function!.name!,
+          description: t.function!.description || "",
+          parameters: (t.function!.parameters || {}) as Record<string, unknown>,
+        }));
+      if (defs.length > 0) {
+        toolSection += getUserToolPrompt(api, defs);
       }
     }
+
     const prompt = toolSection + userMessage;
 
     console.log(
@@ -193,17 +192,9 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
 
     // Create modified context with just the user message.
     // Spread the original context to preserve the full type, then override.
-    // Append user-defined tools to the prompt
-    let finalPrompt = prompt;
-    if (explicitToolRequest) {
-      const ut = (context.tools || []) as Array<{type:string;function?:{name?:string;description?:string;parameters?:Record<string,unknown>}}>;
-      const toolDescs = ut.filter(t=>t.type==="function"&&t.function?.name)
-        .map(t=>`${t.function!.name}: ${t.function!.description||""} args=${JSON.stringify(t.function!.parameters?.properties||{})}`).join("\n");
-      if (toolDescs) finalPrompt = `[TOOLS]\n${toolDescs}\nReply: <tool_call>{\"name\":\"TOOL\",\"arguments\":{}}</tool_call>\n\n${prompt}`;
-    }
-
+    
     const modifiedContext = Object.assign({}, context, {
-      messages: [{ role: "user" as const, content: finalPrompt }],
+      messages: [{ role: "user" as const, content: prompt }],
       tools: [] as typeof context.tools,
       systemPrompt: "",
     });
@@ -239,7 +230,8 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
               }
             }
 
-            const toolCall = extractToolCall(accumulatedText);
+            console.log(`[WebStreamMiddleware] extractToolCall textLen=${accumulatedText.length} preview=${accumulatedText.substring(0,200)}`);
+              const toolCall = extractToolCall(accumulatedText);
 
             if (toolCall) {
               toolCallEmitted = true;
