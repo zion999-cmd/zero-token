@@ -29,8 +29,39 @@ function getCookieForProvider(apiId: string): string {
   return entry.token || '';
 }
 
+// ── Config ────────────────────────────────────────────
+
+const CONFIG_FILE = path.join(__dirname, '..', 'config.json');
+
+function loadAccessToken(): string {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    return cfg.access_token || '';
+  } catch {
+    return '';
+  }
+}
+
+const ACCESS_TOKEN = loadAccessToken();
+
 const app = express();
 app.use(express.json());
+
+// ── Auth middleware ────────────────────────────────────
+
+if (ACCESS_TOKEN) {
+  app.use('/v1', (req: Request, res: Response, next) => {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (token !== ACCESS_TOKEN) {
+      return res.status(401).json({
+        error: { message: 'Invalid access token', type: 'authentication_error', param: null },
+      });
+    }
+    next();
+  });
+  console.log('Access token auth enabled');
+}
 
 app.get('/', (_req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, '..', 'index.html'));
