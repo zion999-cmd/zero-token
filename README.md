@@ -4,21 +4,18 @@
 
 ## 支持的供应商
 
-| 供应商 | 状态 | 方式 |
-|--------|------|------|
-| DeepSeek | ✅ | 纯 HTTP API (含 PoW 解题) |
-| Claude | ✅ | 浏览器内 API 调用 |
-| Kimi | ✅ | 浏览器客户端 (attach) |
-| ChatGLM | ✅ | 浏览器客户端 (attach) |
-| Doubao | ✅ | 浏览器客户端 (attach) |
-| Qwen | ✅ | 浏览器客户端 (attach) |
-| Grok | ✅ | DOM 交互 |
-| ChatGPT | ⚠️ | 需先登录 chatgpt.com |
-| Gemini | ❌ | 地区限制 |
-| Perplexity | ⚠️ | 待测试 |
-| Qwen CN | ⚠️ | 待测试 |
-| GLM Intl | ⚠️ | 待测试 |
-| Xiaomi MiMo | ⚠️ | 待测试 |
+| 供应商 | 聊天 | 工具调用 | 方式 |
+|--------|------|---------|------|
+| DeepSeek | ✅ | ✅ | 纯 HTTP API (含 PoW 解题) |
+| Claude | ✅ | ✅ | 浏览器内 API (绕过 Cloudflare) |
+| Kimi | ✅ | ✅ | 浏览器客户端 (attach) |
+| ChatGLM | ✅ | ✅ | 浏览器客户端 (attach) |
+| Qwen | ✅ | ✅ | 浏览器客户端 (attach) |
+| Grok | ✅ | ⚠️ | DOM 交互 (anti-bot 绕过) |
+| Doubao | ✅ | ⚠️ | 浏览器客户端 (间歇可用) |
+| ChatGPT | ⚠️ | — | 需先登录 |
+| Gemini | ❌ | — | 地区限制 |
+| 其他 | ⚠️ | — | 待测试 |
 
 ## 快速开始
 
@@ -157,6 +154,59 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
   -d '{"model": "claude-web/claude-chat", "messages": [...]}'
 ```
 
+### Tool Calling (Function Calling)
+
+支持标准 OpenAI `tools` 参数，返回 `tool_calls`。各供应商使用不同的 prompt 策略：
+
+```bash
+curl -X POST http://127.0.0.1:3001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-web/deepseek-chat",
+    "messages": [{"role": "user", "content": "计算 123*456"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "calculator",
+        "description": "计算数学表达式",
+        "parameters": {
+          "type": "object",
+          "properties": {"expression": {"type": "string"}},
+          "required": ["expression"]
+        }
+      }
+    }]
+  }'
+```
+
+响应：
+
+```json
+{
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "tool_calls": [{
+        "function": {
+          "name": "calculator",
+          "arguments": "{\"expression\":\"123*456\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}
+```
+
+供应商 Prompt 策略：
+
+| 供应商 | 策略 | 说明 |
+|--------|------|------|
+| DeepSeek/Kimi/GLM/Qwen | `<tool_call>` XML | Hermes 风格，模型原生支持 |
+| Grok/Claude | `function_call` JSON | OpenAI 兼容格式 |
+| Doubao | `<tool_call>` XML | 间歇可用 |
+
 ### `GET /health`
 
 ```bash
@@ -198,33 +248,44 @@ print(response.choices[0].message.content)
 ## 架构
 
 ```
-浏览器 (Chrome Debug, port 9222)
+用户请求 (OpenAI-compatible API)
     │
-    ├─ CDP 附加 ──→ 浏览器客户端 (Kimi, GLM, Doubao, Qwen)
-    │               Playwright attach 模式，复用已登录页面
+    ├─ /v1/models         → 模型列表 + 授权状态
+    ├─ /v1/chat/completions → wrapWithToolCalling 中间件
+    │   │
+    │   ├─ 工具注入 (per-provider prompt strategy)
+    │   ├─ 流式处理 (SSE → OpenAI chunks)
+    │   └─ 工具调用解析 (extractToolCall)
     │
-    ├─ CDP 附加 ──→ DOM 交互 (Grok)
-    │               绕过 anti-bot，直接操作输入框
-    │
-    ├─ page.evaluate ──→ 浏览器内 fetch (Claude)
-    │                    页面上下文调用 API，绕过 Cloudflare
-    │
-    └─ cookie/token ──→ 纯 HTTP 客户端 (DeepSeek)
-                        直接调用 API + WebAssembly PoW 解题
+    └─ 供应商适配层
+        │
+        ├─ DeepSeek → 纯 HTTP + PoW (WebAssembly)
+        ├─ Claude   → 浏览器内 fetch (绕过 Cloudflare)
+        ├─ Kimi/GLM/Qwen/Doubao → 浏览器 CDP attach
+        └─ Grok     → DOM 交互 (绕过 anti-bot)
 
-auth-profiles.json ──→ 网关自动加载 cookie
+浏览器 (Chrome Debug, port 9222)
+    └─ Playwright CDP 附加模式，复用已登录页面
+
+auth-profiles.json → 网关自动加载 cookie/token
 ```
 
 ## 项目结构
 
 ```
 my-zero-token/
-  extensions/browser/src/browser/  # 浏览器扩展桩（cdp, chrome, config，零外部依赖）
-  src/                             # 网关核心
-  config/                          # 配置 stub（项目根，供 provider 导入）
+  extensions/browser/src/browser/  # CDP/Chrome 桩 (零外部依赖)
+  src/
+    index.ts                       # Express 网关 (OpenAI 兼容 API)
+    onboard-webauth.ts             # Web 模型授权向导
+    streams/                       # 流式响应处理 (延迟加载工厂)
+    providers/                     # 供应商客户端 (HTTP + 浏览器)
+    tool-calling/                  # 工具调用中间件 + 解析器 + prompt 策略
+    config/                        # 配置 stub (attach-only)
+  config/                          # 配置 stub (项目根)
   start-chrome-debug.sh            # 启动 Chrome 调试模式
   onboard.sh                       # Web 模型授权向导
-  server.sh                        # 网关管理
+  server.sh                        # 网关管理 (start/stop/restart/status)
   setup.sh                         # 一键初始化
 ```
 
