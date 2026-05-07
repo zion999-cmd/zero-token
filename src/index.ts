@@ -157,6 +157,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           const finishReason = stopReason === 'toolUse' ? 'tool_calls' : stopReason;
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
+            system_fingerprint: 'fp_myzt_001',
             choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
             usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           })}\n\n`);
