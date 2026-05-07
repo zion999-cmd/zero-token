@@ -44,13 +44,13 @@ open http://127.0.0.1:3001
 
 ## 访问控制
 
-在项目根创建 `config.json` 来启用 API 认证：
+创建 `config/config.json` 来启用 API 认证：
 
 ```json
 { "access_token": "sk-my-secret-token" }
 ```
 
-参考 `config.json.example`。启用后 `/v1/*` 需要 `Authorization: Bearer <token>`。不创建该文件或 `access_token` 为空则不启用认证。
+参考 `config/config.json.example`。启用后 `/v1/*` 需要 `Authorization: Bearer <token>`。
 
 ## 管理命令
 
