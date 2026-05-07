@@ -155,8 +155,10 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // Only inject tool prompt when the message likely needs tool use.
     // This reduces ban risk by keeping most messages short and natural.
     const hasAgentTools = (context.tools?.length ?? 0) > 0;
-    const injectTools =
-      shouldInjectToolPrompt(api) && hasAgentTools && needsToolInjection(userMessage);
+    // Always inject+parse when tools are explicitly passed via API
+    const explicitToolRequest = hasAgentTools;
+    const injectTools = explicitToolRequest ||
+      (shouldInjectToolPrompt(api) && hasAgentTools && needsToolInjection(userMessage));
 
     // Build the prompt: built-in tool prompt + user-defined tools + user message
     let toolSection = "";
@@ -190,8 +192,17 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
 
     // Create modified context with just the user message.
     // Spread the original context to preserve the full type, then override.
+    // Append user-defined tools to the prompt
+    let finalPrompt = prompt;
+    if (explicitToolRequest) {
+      const ut = (context.tools || []) as Array<{type:string;function?:{name?:string;description?:string;parameters?:Record<string,unknown>}}>;
+      const toolDescs = ut.filter(t=>t.type==="function"&&t.function?.name)
+        .map(t=>`${t.function!.name}: ${t.function!.description||""} args=${JSON.stringify(t.function!.parameters?.properties||{})}`).join("\n");
+      if (toolDescs) finalPrompt = `[TOOLS]\n${toolDescs}\nReply: <tool_call>{\"name\":\"TOOL\",\"arguments\":{}}</tool_call>\n\n${prompt}`;
+    }
+
     const modifiedContext = Object.assign({}, context, {
-      messages: [{ role: "user" as const, content: prompt }],
+      messages: [{ role: "user" as const, content: finalPrompt }],
       tools: [] as typeof context.tools,
       systemPrompt: "",
     });
@@ -200,6 +211,7 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
       // No tool calling — just pass through with cleaned context
       return streamFn(model, modifiedContext, options);
     }
+
 
     // --- With tool calling: wrap the output stream ---
     const originalStreamOrPromise = streamFn(model, modifiedContext, options);
