@@ -33,34 +33,44 @@ function getCookieForProvider(apiId: string): string {
 
 const CONFIG_FILE = path.join(__dirname, '..', 'config', 'config.json');
 
-function loadAccessToken(): string {
+function loadApiKey(): string {
   try {
     const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    return cfg.access_token || '';
+    return cfg.api_key || cfg.access_token || '';
   } catch {
     return '';
   }
 }
 
-const ACCESS_TOKEN = loadAccessToken();
+const API_KEY = loadApiKey();
 
 const app = express();
 app.use(express.json());
 
-// ── Auth middleware ────────────────────────────────────
+// ── Auth middleware (OpenAI-compatible) ────────────────
 
-if (ACCESS_TOKEN) {
+if (API_KEY) {
   app.use('/v1', (req: Request, res: Response, next) => {
+    // OpenAI SDK sends: Authorization: Bearer <key>
     const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (token !== ACCESS_TOKEN) {
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    // Some clients send: x-api-key header
+    const xKey = (req.headers['x-api-key'] as string) || '';
+    const token = bearer || xKey;
+
+    if (token !== API_KEY) {
       return res.status(401).json({
-        error: { message: 'Invalid access token', type: 'authentication_error', param: null },
+        error: {
+          message: 'Incorrect API key provided. You can find your API key in config/config.json.',
+          type: 'invalid_request_error',
+          param: null,
+          code: 'invalid_api_key',
+        },
       });
     }
     next();
   });
-  console.log('Access token auth enabled');
+  console.log('API key auth enabled');
 }
 
 app.get('/', (_req: Request, res: Response) => {

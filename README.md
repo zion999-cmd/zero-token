@@ -44,13 +44,21 @@ open http://127.0.0.1:3001
 
 ## 访问控制
 
-创建 `config/config.json` 来启用 API 认证：
+创建 `config/config.json` 来启用 API 认证（OpenAI 兼容）：
 
 ```json
-{ "access_token": "sk-my-secret-token" }
+{ "api_key": "sk-my-secret-key" }
 ```
 
-参考 `config/config.json.example`。启用后 `/v1/*` 需要 `Authorization: Bearer <token>`。
+参考 `config/config.json.example`。支持两种方式传递 key：
+
+```bash
+# Bearer token (OpenAI SDK 默认)
+Authorization: Bearer sk-my-secret-key
+
+# 或 x-api-key header
+x-api-key: sk-my-secret-key
+```
 
 ## 管理命令
 
@@ -247,7 +255,7 @@ curl http://127.0.0.1:3001/health
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:3001/v1", api_key="not-needed")
+client = OpenAI(base_url="http://127.0.0.1:3001/v1", api_key="sk-my-secret-key")
 response = client.chat.completions.create(
     model="claude-web/claude-chat",
     messages=[{"role": "user", "content": "Hello"}],
