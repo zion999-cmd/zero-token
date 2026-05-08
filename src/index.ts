@@ -417,9 +417,17 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       role: m.role as 'user' | 'assistant',
       content: m.content,
     }));
+    // Map Anthropic tool_choice → OpenAI format
+    const anthropicToolChoice: string | undefined =
+      tool_choice === 'any' || tool_choice === 'required' ? 'required' :
+      tool_choice === 'none' ? 'none' :
+      typeof tool_choice === 'object' && (tool_choice as { type: string }).type === 'tool' ? 'required' :
+      undefined;
+
     const context = {
       messages: internalMsgs,
       tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
+      tool_choice: anthropicToolChoice,
       systemPrompt,
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
