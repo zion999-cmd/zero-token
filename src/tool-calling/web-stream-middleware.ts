@@ -153,7 +153,9 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
       if (contextText.length + line.length > MAX_CONTEXT_CHARS) break;
       contextText = line + contextText; // prepend so newest is last
     }
-    const userMessage = contextText || "Hi";
+    // If there's conversation history, instruct model to respond to the latest message
+    const hasHistory = contextText.includes('\nAssistant:');
+    const userMessage = hasHistory ? `${contextText}\n(Respond to the latest "User:" message above.)\n` : contextText || "Hi";
 
     if (!userMessage) {
       return streamFn(model, context, options);
