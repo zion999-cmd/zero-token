@@ -430,7 +430,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
       tool_choice: anthropicToolChoice,
       systemPrompt,
-      sessionId: `req_${msgId}`, // stateless: fresh web chat session per request
+      sessionId: `req_${Math.random().toString(36).slice(2)}`, // stateless: fresh web chat session per request
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
