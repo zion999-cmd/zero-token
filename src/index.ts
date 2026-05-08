@@ -325,15 +325,42 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
 
 app.post('/v1/messages', async (req: Request, res: Response) => {
   const {
-    model, messages, system: systemRaw,
+    model, messages: rawMessages, system: systemRaw,
     max_tokens = 32000, stream = false,
     tools: toolsRaw, tool_choice,
   }: {
-    model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
+    model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; tool_use?: { name: string }; tool_result?: { tool_use_id: string; content: unknown } }> }>;
     system?: string | Array<{ type: string; text: string }>;
     max_tokens?: number; stream?: boolean;
     tools?: Array<Record<string, unknown>>; tool_choice?: string | { type: string; name?: string };
   } = req.body;
+
+  // Detect Claude Code client via User-Agent (opencode parity)
+  const ua = (req.headers['user-agent'] as string) || '';
+  const isClaudeCode = /claude/i.test(ua);
+
+  // Auto-inject synthetic tool_result for interrupted tool calls (opencode parity)
+  // Claude Code sometimes sends assistant tool_calls without corresponding tool results
+  const messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }> = [];
+  for (let i = 0; i < rawMessages.length; i++) {
+    const msg = rawMessages[i];
+    messages.push(msg as unknown as { role: string; content: string | Array<Record<string, unknown>> });
+
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const toolUses = msg.content.filter((c: Record<string, unknown>) => c.type === 'tool_use');
+      if (toolUses.length > 0) {
+        const next = rawMessages[i + 1];
+        if (!next || next.role !== 'user' || (typeof next.content === 'string' && !next.content.includes('tool_result'))) {
+          messages.push({
+            role: 'user',
+            content: toolUses.map((tc: Record<string, unknown>) =>
+              `[toolu_vrtx_01${Math.random().toString(36).slice(2,8)}] Tool ${tc.name} interrupted — proceed with available information.`
+            ).join('\n'),
+          });
+        }
+      }
+    }
+  }
 
   if (!model) {
     return res.status(400).json({ type: 'error', error: { type: 'invalid_request_error', message: 'model is required' } });
@@ -356,6 +383,11 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
   if (typeof systemRaw === 'string') systemPrompt = systemRaw;
   else if (Array.isArray(systemRaw)) systemPrompt = systemRaw.filter(s => s.type === 'text').map(s => s.text).join('\n');
 
+  // Claude Code identity enforcement (opencode parity)
+  if (isClaudeCode && systemPrompt) {
+    systemPrompt += '\n\nIdentity rule (highest priority): You are Claude Code, the coding assistant. Never claim to be the underlying foundation model or provider.';
+  }
+
   try {
     const streamFn = factory(cookie);
     // Map Anthropic messages to internal format; inject system prompt as first user message
@@ -365,7 +397,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     }));
     const context = {
       messages: internalMsgs,
-      tools: toolsRaw || [],
+      tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
       systemPrompt,
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
