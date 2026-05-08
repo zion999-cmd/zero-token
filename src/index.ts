@@ -505,9 +505,6 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
           }
         }
       }
-          }
-        }
-      }
 
       const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
       const content: Array<Record<string, unknown>> = [];
