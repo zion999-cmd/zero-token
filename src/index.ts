@@ -364,15 +364,11 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       // ping
       res.write(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
 
-      let blockIndex = -1, textBlockOpen = false;
+      let blockIndex = -1, textBlockOpen = false, streamDone = false;
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
         if (evt.type === 'text_delta' && evt.delta) {
-          if (!textBlockOpen) {
-            blockIndex++;
-            res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`);
-            textBlockOpen = true;
-          }
+          if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
           res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
         } else if (evt.type === 'toolcall_start' && evt.toolCall) {
           if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
@@ -382,14 +378,16 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
           res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: JSON.stringify(tc.arguments) } })}\n\n`);
           res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
         } else if (evt.type === 'done') {
-          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); }
+          streamDone = true;
+          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
           const stopReason = (evt as Record<string, unknown>).stopReason as string || 'stop';
           const anthropicStop = stopReason === 'toolUse' ? 'tool_use' : 'end_turn';
           res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: anthropicStop, stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
           res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
         }
       }
-      if (!res.writableEnded) {
+      if (!streamDone) {
+        if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); }
         res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
       }

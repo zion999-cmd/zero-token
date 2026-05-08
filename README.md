@@ -72,6 +72,22 @@ x-api-key: sk-my-secret-key
 ./onboard.sh             # Web 模型授权向导
 ```
 
+## API
+
+同时支持 **OpenAI** 和 **Anthropic** 两种 API 范式。
+
+### 快速连接
+
+```python
+# OpenAI SDK
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:3001/v1", api_key="not-needed")
+
+# Anthropic SDK (Claude Code, OpenClaw 等使用此接口)
+ANTHROPIC_BASE_URL="http://127.0.0.1:3001/v1"
+ANTHROPIC_API_KEY="not-needed"
+```
+
 ## API 端点
 
 ### `GET /v1/models`
@@ -224,6 +240,47 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 | DeepSeek/Kimi/GLM/Qwen | `<tool_call>` XML | Hermes 风格，模型原生支持 |
 | Grok/Claude | `function_call` JSON | OpenAI 兼容格式 |
 | Doubao | `<tool_call>` XML | 间歇可用 |
+
+### `POST /v1/messages` (Anthropic Messages API)
+
+Claude Code、OpenClaw 等工具使用的 Anthropic 兼容接口。
+
+```bash
+# 非流式
+curl -X POST http://127.0.0.1:3001/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-web/claude-chat",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Hello"}],
+    "system": "You are a helpful assistant"
+  }'
+
+# 流式 (SSE)
+curl -X POST http://127.0.0.1:3001/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-web/deepseek-chat",
+    "max_tokens": 200,
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": true
+  }'
+```
+
+响应格式：
+
+```json
+{
+  "id": "msg_xxx",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Hello!"}],
+  "model": "claude-web/claude-chat",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 0, "output_tokens": 0}
+}
+```
 
 ### `GET /health`
 
