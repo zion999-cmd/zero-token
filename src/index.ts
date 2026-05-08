@@ -182,7 +182,8 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   try {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
-    const context = { messages, tools: tools || [], tool_choice };
+    // Stateless: random sessionId per request → fresh web chat session each time
+    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${chatId}` };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -429,6 +430,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
       tool_choice: anthropicToolChoice,
       systemPrompt,
+      sessionId: `req_${msgId}`, // stateless: fresh web chat session per request
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
