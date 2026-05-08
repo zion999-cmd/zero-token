@@ -495,16 +495,27 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
         }
       }
 
-      // Strip thinking from content (DeepSeek etc mix thinking into text)
+      // Strip thinking from content — Claude Code doesn't support thinking blocks
+      // Strategy 1: " response" marker (DeepSeek V3)
       const markerIdx = fullContent.indexOf(' response');
-      if (markerIdx > 20 && !fullThinking) {
-        fullThinking = fullContent.slice(0, markerIdx).trim();
+      if (markerIdx > 20) {
         fullContent = fullContent.slice(markerIdx + 9).trim();
+      } else {
+        // Strategy 2: language switch (EN reasoning → reply in user's language)
+        const match = fullContent.match(/[.!?。！？\n](?=\s*(你好|您好|Hello\b|Hi\b|Sure\b|当然|Here|以下))/);
+        if (match) fullContent = fullContent.slice(match.index! + 1).trim();
+        // Strategy 3: last sentence is usually the reply
+        else if (fullContent.length > 200) {
+          const sentences = [...fullContent.matchAll(/[.!?。！？\n](?=\s*[A-Z\u4e00-\u9fff])/g)];
+          if (sentences.length > 3) {
+            const lastBreak = sentences[sentences.length - 1].index!;
+            if (lastBreak > fullContent.length * 0.4) fullContent = fullContent.slice(lastBreak + 1).trim();
+          }
+        }
       }
 
       const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
       const content: Array<Record<string, unknown>> = [];
-      if (fullThinking) content.push({ type: 'thinking', thinking: fullThinking.slice(0, max_tokens) });
       if (fullContent) content.push({ type: 'text', text: fullContent.slice(0, max_tokens) });
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
