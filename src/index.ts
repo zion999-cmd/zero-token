@@ -386,12 +386,10 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
   // Check in-flight dedup cache
   const dupKey = `anthropic|${model}|${JSON.stringify((rawMessages as Array<{ role: string; content: unknown }>).at(-1))}|${stream}`;
   const existing = inflight.get(dupKey);
-  if (existing) { console.log('[DEDUP] Anthropic: reusing response'); const body = await existing; return res.status(200).set('Content-Type', 'application/json').send(body); } {
-    model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; tool_use?: { name: string }; tool_result?: { tool_use_id: string; content: unknown } }> }>;
-    system?: string | Array<{ type: string; text: string }>;
-    max_tokens?: number; stream?: boolean;
-    tools?: Array<Record<string, unknown>>; tool_choice?: string | { type: string; name?: string };
-  } = req.body;
+  if (existing) { console.log('[DEDUP] Anthropic: reusing response'); const body = await existing; return res.status(200).set('Content-Type', 'application/json').send(body); }
+  if (!model) {
+    return res.status(400).json({ type: 'error', error: { type: 'invalid_request_error', message: 'model is required' } });
+  }
 
   // Detect Claude Code client via User-Agent (opencode parity)
   const ua = (req.headers['user-agent'] as string) || '';
