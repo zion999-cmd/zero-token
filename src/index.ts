@@ -7,10 +7,6 @@ import { getWebStreamFactory, listWebStreamApiIds } from './streams/web-stream-f
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── In-flight request dedup ───────────────────────────
-const inflight = new Map<string, Promise<string>>();
-setInterval(() => { for (const [k] of inflight) inflight.delete(k); }, 60000);
-
 // ── Request logging ────────────────────────────────────
 
 const LOG_DIR = path.join(__dirname, '..', '.myzt-state');
@@ -111,15 +107,6 @@ if (API_KEY) {
   console.log('API key auth enabled');
 }
 
-function getLastUserKey(messages: Array<{ role: string; content: unknown }>): string {
-  const last = [...messages].reverse().find(m => m.role === 'user');
-  if (!last) return 'default';
-  let text = '';
-  if (typeof last.content === 'string') text = last.content;
-  else if (Array.isArray(last.content)) text = last.content.filter((p: Record<string, unknown>) => p.type === 'text').map((p: Record<string, unknown>) => (p.text as string) || '').join('');
-  return text.slice(0, 80).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').slice(0, 40) || 'default';
-}
-
 app.get('/', (_req: Request, res: Response) => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf-8');
   res.send(html.replace('</head>', `<script>window.MYZT_API_KEY=${JSON.stringify(API_KEY)}</script></head>`));
@@ -165,15 +152,6 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   // Accept OpenAI SDK params
   const { model, messages, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop } = req.body;
   void temperature; void top_p; void n; void stop;
-
-  // Dedup: if same request is in-flight, wait and return same result
-  const dupKey = JSON.stringify({ model, lastUser: messages.at(-1), stream, toolCount: (tools || []).length });
-  const existing = inflight.get(dupKey);
-  if (existing) {
-    console.log('[DEDUP] Waiting for in-flight request');
-    const body = await existing;
-    return res.status(200).set('Content-Type', 'application/json').send(body);
-  }
   // Web models don't have strict token limits, but truncate to avoid 20MB context overflow
   // Honour max_tokens if provided, otherwise no limit
   const maxOutput = max_tokens || Infinity;
@@ -204,8 +182,8 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   try {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
-    // Group related requests by LAST user message (Claude Code sends duplicates)
-    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}` };
+    // Stateless: random sessionId per request → fresh web chat session each time
+    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${Math.random().toString(36).slice(2)}` };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -355,9 +333,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       };
 
-      const responseStr = JSON.stringify(responseBody);
-      logRequest({ event: 'res', id: chatId, bytes: responseStr.length, ms: Date.now() - t0 });
-      if (!stream && !errorMsg) inflight.set(dupKey, Promise.resolve(responseStr));
+      logRequest({ event: 'res', id: chatId, bytes: JSON.stringify(responseBody).length, ms: Date.now() - t0 });
       res.json(responseBody);
     }
   } catch (error: unknown) {
@@ -377,19 +353,11 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     max_tokens = 32000, stream = false,
     tools: toolsRaw, tool_choice,
   }: {
-    model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
+    model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; tool_use?: { name: string }; tool_result?: { tool_use_id: string; content: unknown } }> }>;
     system?: string | Array<{ type: string; text: string }>;
     max_tokens?: number; stream?: boolean;
     tools?: Array<Record<string, unknown>>; tool_choice?: string | { type: string; name?: string };
   } = req.body;
-
-  // Check in-flight dedup cache
-  const dupKey = `anthropic|${model}|${JSON.stringify((rawMessages as Array<{ role: string; content: unknown }>).at(-1))}|${stream}`;
-  const existing = inflight.get(dupKey);
-  if (existing) { console.log('[DEDUP] Anthropic: reusing response'); const body = await existing; return res.status(200).set('Content-Type', 'application/json').send(body); }
-  if (!model) {
-    return res.status(400).json({ type: 'error', error: { type: 'invalid_request_error', message: 'model is required' } });
-  }
 
   // Detect Claude Code client via User-Agent (opencode parity)
   const ua = (req.headers['user-agent'] as string) || '';
@@ -463,7 +431,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
       tool_choice: anthropicToolChoice,
       systemPrompt,
-      sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}`,
+      sessionId: `req_${Math.random().toString(36).slice(2)}`, // stateless: fresh web chat session per request
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
@@ -486,10 +454,12 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
         if (evt.type === 'thinking_delta' && evt.delta) {
-          // Emit thinking as regular text (Anthropic has no separate thinking block)
-          streamText += evt.delta;
-          if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
-          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
+          // Emit thinking as a separate content block
+          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
+          blockIndex++;
+          res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } })}\n\n`);
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'thinking_delta', thinking: evt.delta } })}\n\n`);
+          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
         } else if (evt.type === 'text_delta' && evt.delta) {
           if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
           streamText += evt.delta;
@@ -537,20 +507,17 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
         }
       }
 
-      // Merge thinking into content if no explicit text (Anthropic has no thinking block)
-      if (!fullContent && fullThinking) fullContent = fullThinking;
-      else if (fullThinking && fullContent.length < 50) fullContent = fullThinking + '\n\n' + fullContent;
-
       const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
       const content: Array<Record<string, unknown>> = [];
       if (fullContent) content.push({ type: 'text', text: fullContent.slice(0, max_tokens) });
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
 
-      const responseStr = JSON.stringify({ id: msgId, type: 'message', role: 'assistant', content, model, stop_reason: anthropicStop, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } });
       logRequest({ event: "res", id: msgId, ms: Date.now() - t0, preview: fullContent.slice(0, 100) });
-      if (!stream) inflight.set(dupKey, Promise.resolve(responseStr));
-      res.json(JSON.parse(responseStr));
+      res.json({
+        id: msgId, type: 'message', role: 'assistant', content, model,
+        stop_reason: anthropicStop, stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
       });
     }
   } catch (error: unknown) {
