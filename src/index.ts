@@ -442,7 +442,14 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       let blockIndex = -1, textBlockOpen = false, streamDone = false;
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
-        if (evt.type === 'text_delta' && evt.delta) {
+        if (evt.type === 'thinking_delta' && evt.delta) {
+          // Emit thinking as a separate content block
+          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
+          blockIndex++;
+          res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } })}\n\n`);
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'thinking_delta', thinking: evt.delta } })}\n\n`);
+          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
+        } else if (evt.type === 'text_delta' && evt.delta) {
           if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
           res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
         } else if (evt.type === 'toolcall_start' && evt.toolCall) {
@@ -469,25 +476,35 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       logRequest({ event: "res", id: msgId, stream: true, ms: Date.now() - t0 });
       res.end();;
     } else {
-      let fullContent = '', finishReason = 'stop';
+      let fullContent = '', fullThinking = '', finishReason = 'stop';
       const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
-        const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> }; message?: { content?: Array<{ type: string; text?: string; name?: string; arguments?: Record<string, unknown>; id?: string }>; stopReason?: string }; stopReason?: string };
+        const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> }; message?: { content?: Array<{ type: string; text?: string; thinking?: string; name?: string; arguments?: Record<string, unknown>; id?: string }>; stopReason?: string }; stopReason?: string };
         if (evt.type === 'text_delta') fullContent += evt.delta || '';
+        else if (evt.type === 'thinking_delta') fullThinking += evt.delta || '';
         else if (evt.type === 'toolcall_end' && evt.toolCall) toolCalls.push(evt.toolCall);
         else if (evt.type === 'done') {
           finishReason = evt.stopReason || evt.message?.stopReason || 'stop';
           if (evt.message?.content) {
             for (const part of evt.message.content) {
               if (part.type === 'text' && part.text) fullContent = part.text;
+              else if (part.type === 'thinking' && part.thinking) fullThinking = part.thinking;
               else if (part.type === 'toolCall' && part.name) toolCalls.push({ id: (part as Record<string,string>).id || '', name: part.name, arguments: part.arguments || {} });
             }
           }
         }
       }
 
+      // Strip thinking from content (DeepSeek etc mix thinking into text)
+      const markerIdx = fullContent.indexOf(' response');
+      if (markerIdx > 20 && !fullThinking) {
+        fullThinking = fullContent.slice(0, markerIdx).trim();
+        fullContent = fullContent.slice(markerIdx + 9).trim();
+      }
+
       const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
       const content: Array<Record<string, unknown>> = [];
+      if (fullThinking) content.push({ type: 'thinking', thinking: fullThinking.slice(0, max_tokens) });
       if (fullContent) content.push({ type: 'text', text: fullContent.slice(0, max_tokens) });
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
