@@ -450,7 +450,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       // ping
       res.write(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
 
-      let blockIndex = -1, textBlockOpen = false, streamDone = false;
+      let blockIndex = -1, textBlockOpen = false, streamDone = false, streamText = '';
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
         if (evt.type === 'thinking_delta' && evt.delta) {
@@ -462,6 +462,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
           res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
         } else if (evt.type === 'text_delta' && evt.delta) {
           if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
+          streamText += evt.delta;
           res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
         } else if (evt.type === 'toolcall_start' && evt.toolCall) {
           if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
@@ -484,7 +485,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
         res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
       }
-      logRequest({ event: "res", id: msgId, stream: true, ms: Date.now() - t0 });
+      logRequest({ event: "res", id: msgId, stream: true, ms: Date.now() - t0, preview: streamText.slice(0, 200) });
       res.end();;
     } else {
       let fullContent = '', fullThinking = '', finishReason = 'stop';
