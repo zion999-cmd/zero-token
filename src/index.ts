@@ -346,6 +346,10 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
 
 // ── Anthropic Messages API (/v1/messages) ─────────────
 
+// ── Dedup: Claude Code sometimes sends duplicate requests ─
+const recentHashes = new Map<string, number>();
+setInterval(() => { const now = Date.now(); for (const [k, t] of recentHashes) if (now - t > 5000) recentHashes.delete(k); }, 10000);
+
 app.post('/v1/messages', async (req: Request, res: Response) => {
   const {
     model, messages: rawMessages, system: systemRaw,
@@ -384,6 +388,15 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       }
     }
   }
+
+  // Skip duplicate requests (same content within 2 seconds)
+  const reqHash = `${model}|${max_tokens}|${JSON.stringify(rawMessages).slice(0, 500)}`;
+  const lastTime = recentHashes.get(reqHash);
+  if (lastTime && Date.now() - lastTime < 2000) {
+    console.log('[DEDUP] Skipping duplicate request');
+    return res.status(409).json({ type: 'error', error: { type: 'duplicate_request', message: 'Duplicate request skipped' } });
+  }
+  recentHashes.set(reqHash, Date.now());
 
   if (!model) {
     return res.status(400).json({ type: 'error', error: { type: 'invalid_request_error', message: 'model is required' } });
