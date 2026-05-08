@@ -7,6 +7,19 @@ import { getWebStreamFactory, listWebStreamApiIds } from './streams/web-stream-f
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ── Request logging ────────────────────────────────────
+
+const LOG_DIR = path.join(__dirname, '..', '.myzt-state');
+const REQ_LOG = path.join(LOG_DIR, 'requests.log');
+
+function logRequest(entry: Record<string, unknown>) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
+    fs.appendFileSync(REQ_LOG, line, 'utf-8');
+  } catch { /* best-effort */ }
+}
+
 // ── Auth profile loading ──────────────────────────────
 
 const AUTH_FILE = path.join(__dirname, '..', '.myzt-state', 'auth-profiles.json');
@@ -152,6 +165,10 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
 
+    const t0 = Date.now();
+    const msgCount = (messages as Array<unknown>).length;
+    logRequest({ event: 'req', id: chatId, model: apiId, msgs: msgCount, stream, tools: !!(tools?.length) });
+
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -215,6 +232,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         })}\n\ndata: [DONE]\n\n`);
       }
+      logRequest({ event: 'res', id: chatId, stream: true, ms: Date.now() - t0 });
       res.end();
     } else {
       let fullContent = '';
@@ -291,6 +309,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       };
 
+      logRequest({ event: 'res', id: chatId, bytes: JSON.stringify(responseBody).length, ms: Date.now() - t0 });
       res.json(responseBody);
     }
   } catch (error: unknown) {
@@ -351,6 +370,8 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
+    const t0 = Date.now();
+    logRequest({ event: "req", id: msgId, model: apiId, api: "anthropic", msgs: (messages as Array<unknown>).length, stream, tools: !!(toolsRaw?.length) });
 
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -391,7 +412,8 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
         res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
       }
-      res.end();
+      logRequest({ event: "res", id: msgId, stream: true, ms: Date.now() - t0 });
+      res.end();;
     } else {
       let fullContent = '', finishReason = 'stop';
       const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
@@ -416,6 +438,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
 
+      logRequest({ event: "res", id: msgId, ms: Date.now() - t0 });
       res.json({
         id: msgId, type: 'message', role: 'assistant', content, model,
         stop_reason: anthropicStop, stop_sequence: null,
