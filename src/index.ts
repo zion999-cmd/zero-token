@@ -520,6 +520,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
 
       const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
       const content: Array<Record<string, unknown>> = [];
+      if (fullThinking) content.push({ type: 'thinking', thinking: fullThinking.slice(0, max_tokens) });
       if (fullContent) content.push({ type: 'text', text: fullContent.slice(0, max_tokens) });
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
