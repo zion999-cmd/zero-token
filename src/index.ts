@@ -453,13 +453,8 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       let blockIndex = -1, textBlockOpen = false, streamDone = false, streamText = '';
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
-        if (evt.type === 'thinking_delta' && evt.delta) {
-          // Emit thinking as a separate content block
-          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
-          blockIndex++;
-          res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } })}\n\n`);
-          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'thinking_delta', thinking: evt.delta } })}\n\n`);
-          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
+        if (evt.type === 'thinking_delta') {
+          // Anthropic spec has no thinking block type — drop
         } else if (evt.type === 'text_delta' && evt.delta) {
           if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
           streamText += evt.delta;
