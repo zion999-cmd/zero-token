@@ -183,7 +183,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
     // Stateless: random sessionId per request → fresh web chat session each time
-    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${chatId}` };
+    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${Math.random().toString(36).slice(2)}` };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
