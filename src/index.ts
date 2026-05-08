@@ -505,25 +505,6 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
           }
         }
       }
-
-      // Strip thinking from content (Anthropic has no thinking block type)
-      if (fullContent.length > 400) {
-        const replies = /(你好|您好|Hello\b|Hi\b|Sure!|当然|Here|以下|好的|没问题|答案是|结果是|总结|I am|I'm|我是|我叫|Here's)/i;
-        // S1: " response" marker
-        const m = fullContent.indexOf(' response');
-        if (m > 20) { fullContent = fullContent.slice(m + 9).trim(); }
-        // S2: reply opening in second half
-        else {
-          const half = Math.floor(fullContent.length * 0.3);
-          const rMatch = fullContent.slice(half).match(replies);
-          if (rMatch) fullContent = fullContent.slice(half + rMatch.index!).trim();
-          // S3: last sentence
-          else if (fullContent.length > 200) {
-            const sents = [...fullContent.matchAll(/[.!?。！？\n](?=\s*[A-Z\u4e00-\u9fff])/g)];
-            if (sents.length > 3) {
-              const lb = sents[sents.length - 1].index!;
-              if (lb > fullContent.length * 0.4) fullContent = fullContent.slice(lb + 1).trim();
-            }
           }
         }
       }
