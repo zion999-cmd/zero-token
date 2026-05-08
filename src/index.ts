@@ -7,6 +7,10 @@ import { getWebStreamFactory, listWebStreamApiIds } from './streams/web-stream-f
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ── In-flight request dedup ───────────────────────────
+const inflight = new Map<string, Promise<string>>();
+setInterval(() => { for (const [k] of inflight) inflight.delete(k); }, 60000);
+
 // ── Request logging ────────────────────────────────────
 
 const LOG_DIR = path.join(__dirname, '..', '.myzt-state');
@@ -161,6 +165,15 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   // Accept OpenAI SDK params
   const { model, messages, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop } = req.body;
   void temperature; void top_p; void n; void stop;
+
+  // Dedup: if same request is in-flight, wait and return same result
+  const dupKey = JSON.stringify({ model, lastUser: messages.at(-1), stream, toolCount: (tools || []).length });
+  const existing = inflight.get(dupKey);
+  if (existing) {
+    console.log('[DEDUP] Waiting for in-flight request');
+    const body = await existing;
+    return res.status(200).set('Content-Type', 'application/json').send(body);
+  }
   // Web models don't have strict token limits, but truncate to avoid 20MB context overflow
   // Honour max_tokens if provided, otherwise no limit
   const maxOutput = max_tokens || Infinity;
@@ -342,7 +355,9 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       };
 
-      logRequest({ event: 'res', id: chatId, bytes: JSON.stringify(responseBody).length, ms: Date.now() - t0 });
+      const responseStr = JSON.stringify(responseBody);
+      logRequest({ event: 'res', id: chatId, bytes: responseStr.length, ms: Date.now() - t0 });
+      if (!stream) inflight.set(dupKey, Promise.resolve(responseStr));
       res.json(responseBody);
     }
   } catch (error: unknown) {
@@ -361,7 +376,11 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     model, messages: rawMessages, system: systemRaw,
     max_tokens = 32000, stream = false,
     tools: toolsRaw, tool_choice,
-  }: {
+  }:
+  // Check in-flight cache
+  const dupKey = `anthropic|${model}|${JSON.stringify((rawMessages as Array<{ role: string; content: unknown }>).at(-1))}|${stream}`;
+  const existing = inflight.get(dupKey);
+  if (existing) { console.log('[DEDUP] Anthropic: reusing response'); const body = await existing; return res.status(200).set('Content-Type', 'application/json').send(body); } {
     model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; tool_use?: { name: string }; tool_result?: { tool_use_id: string; content: unknown } }> }>;
     system?: string | Array<{ type: string; text: string }>;
     max_tokens?: number; stream?: boolean;
@@ -524,11 +543,10 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
 
+      const responseStr = JSON.stringify({ id: msgId, type: 'message', role: 'assistant', content, model, stop_reason: anthropicStop, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } });
       logRequest({ event: "res", id: msgId, ms: Date.now() - t0, preview: fullContent.slice(0, 100) });
-      res.json({
-        id: msgId, type: 'message', role: 'assistant', content, model,
-        stop_reason: anthropicStop, stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
+      if (!stream) inflight.set(dupKey, Promise.resolve(responseStr));
+      res.json(JSON.parse(responseStr));
       });
     }
   } catch (error: unknown) {
