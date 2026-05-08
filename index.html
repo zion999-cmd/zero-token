@@ -389,6 +389,13 @@ function addToolMessage(toolCalls, results) {
 
 async function sendWithTools() { /* placeholder, real logic in sendMessage */ }
 
+// ── API Key ────────────────────────────────
+const API_KEY = window.MYZT_API_KEY || '';
+function authHeaders(h = {}) {
+  if (API_KEY) h['Authorization'] = 'Bearer ' + API_KEY;
+  return h;
+}
+
 // ── Cookie ─────────────────────────────────
 const savedCookie = localStorage.getItem('myzt_cookie');
 if (savedCookie && typeof $cookieRow !== 'undefined' && $cookieRow) {
@@ -402,7 +409,7 @@ function getCookie() {
 // ── Model loading ──────────────────────────
 async function loadModels() {
   try {
-    const r = await fetch(API + '/v1/models');
+    const r = await fetch(API + '/v1/models', {headers: authHeaders()});
     const d = await r.json();
     models = d.data || [];
     renderModelList();
@@ -538,7 +545,7 @@ function splitThinking(text) {
 // ── Send message ───────────────────────────
 
 async function callLLM(messages, onDelta) {
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = authHeaders({ 'Content-Type': 'application/json' });
   const cookie = getCookie();
   if (cookie) headers['x-cookie'] = cookie;
 

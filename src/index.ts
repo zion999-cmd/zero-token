@@ -108,7 +108,8 @@ if (API_KEY) {
 }
 
 app.get('/', (_req: Request, res: Response) => {
-  res.sendFile(path.join(__dirname, '..', 'index.html'));
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf-8');
+  res.send(html.replace('</head>', `<script>window.MYZT_API_KEY=${JSON.stringify(API_KEY)}</script></head>`));
 });
 
 app.get('/health', (_req: Request, res: Response) => {
