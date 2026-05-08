@@ -357,7 +357,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
 
       const responseStr = JSON.stringify(responseBody);
       logRequest({ event: 'res', id: chatId, bytes: responseStr.length, ms: Date.now() - t0 });
-      if (!stream) inflight.set(dupKey, Promise.resolve(responseStr));
+      if (!stream && !errorMsg) inflight.set(dupKey, Promise.resolve(responseStr));
       res.json(responseBody);
     }
   } catch (error: unknown) {
@@ -376,8 +376,14 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     model, messages: rawMessages, system: systemRaw,
     max_tokens = 32000, stream = false,
     tools: toolsRaw, tool_choice,
-  }:
-  // Check in-flight cache
+  }: {
+    model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
+    system?: string | Array<{ type: string; text: string }>;
+    max_tokens?: number; stream?: boolean;
+    tools?: Array<Record<string, unknown>>; tool_choice?: string | { type: string; name?: string };
+  } = req.body;
+
+  // Check in-flight dedup cache
   const dupKey = `anthropic|${model}|${JSON.stringify((rawMessages as Array<{ role: string; content: unknown }>).at(-1))}|${stream}`;
   const existing = inflight.get(dupKey);
   if (existing) { console.log('[DEDUP] Anthropic: reusing response'); const body = await existing; return res.status(200).set('Content-Type', 'application/json').send(body); } {
