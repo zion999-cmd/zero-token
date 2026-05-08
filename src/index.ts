@@ -507,7 +507,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       }
 
       // Strip thinking from content (Anthropic has no thinking block type)
-      if (fullContent.length > 60) {
+      if (fullContent.length > 400) {
         const replies = /(你好|您好|Hello\b|Hi\b|Sure!|当然|Here|以下|好的|没问题|答案是|结果是|总结|I am|I'm|我是|我叫|Here's)/i;
         // S1: " response" marker
         const m = fullContent.indexOf(' response');
