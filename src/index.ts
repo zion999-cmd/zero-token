@@ -255,7 +255,8 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         })}\n\ndata: [DONE]\n\n`);
       }
-      logRequest({ event: 'res', id: chatId, stream: true, ms: Date.now() - t0 });
+      const streamPreview = fullContent.slice(0, 100);
+      logRequest({ event: 'res', id: chatId, stream: true, ms: Date.now() - t0, preview: streamPreview });
       res.end();
     } else {
       let fullContent = '';
@@ -533,7 +534,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
 
-      logRequest({ event: "res", id: msgId, ms: Date.now() - t0 });
+      logRequest({ event: "res", id: msgId, ms: Date.now() - t0, preview: fullContent.slice(0, 100) });
       res.json({
         id: msgId, type: 'message', role: 'assistant', content, model,
         stop_reason: anthropicStop, stop_sequence: null,
