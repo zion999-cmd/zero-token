@@ -131,22 +131,29 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
       return streamFn(model, feedbackContext, options);
     }
 
-    // Extract just the last user message (web models can't handle full context)
-    let userMessage = "";
-    const lastUserMsg = [...messages].toReversed().find((m) => m.role === "user");
-    if (lastUserMsg) {
-      if (typeof lastUserMsg.content === "string") {
-        userMessage = lastUserMsg.content;
-      } else if (Array.isArray(lastUserMsg.content)) {
-        userMessage = (lastUserMsg.content as TextContent[])
+    // Build conversation from recent messages (respecting 1M context window)
+    // Web models benefit from having context, not just the last message
+    const MAX_CONTEXT_CHARS = 800_000; // leave room for tools + overhead
+    let contextText = "";
+    const recentMessages = [...messages].slice(-50); // at most 50 messages
+    for (const m of recentMessages) {
+      let content = "";
+      if (typeof m.content === "string") {
+        content = m.content;
+      } else if (Array.isArray(m.content)) {
+        content = (m.content as TextContent[])
           .filter((p) => p.type === "text")
           .map((p) => p.text)
           .join("");
       }
+      if (!content) continue;
+      content = stripInboundMeta(content);
+      const label = m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : m.role;
+      const line = `${label}: ${content}\n`;
+      if (contextText.length + line.length > MAX_CONTEXT_CHARS) break;
+      contextText = line + contextText; // prepend so newest is last
     }
-
-    // Strip OpenClaw metadata
-    userMessage = stripInboundMeta(userMessage);
+    const userMessage = contextText || "Hi";
 
     if (!userMessage) {
       return streamFn(model, context, options);
