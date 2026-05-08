@@ -107,6 +107,15 @@ if (API_KEY) {
   console.log('API key auth enabled');
 }
 
+function getLastUserKey(messages: Array<{ role: string; content: unknown }>): string {
+  const last = [...messages].reverse().find(m => m.role === 'user');
+  if (!last) return 'default';
+  let text = '';
+  if (typeof last.content === 'string') text = last.content;
+  else if (Array.isArray(last.content)) text = last.content.filter((p: Record<string, unknown>) => p.type === 'text').map((p: Record<string, unknown>) => (p.text as string) || '').join('');
+  return text.slice(0, 80).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').slice(0, 40) || 'default';
+}
+
 app.get('/', (_req: Request, res: Response) => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf-8');
   res.send(html.replace('</head>', `<script>window.MYZT_API_KEY=${JSON.stringify(API_KEY)}</script></head>`));
@@ -182,8 +191,8 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   try {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
-    // Stateless: random sessionId per request → fresh web chat session each time
-    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${Math.random().toString(36).slice(2)}` };
+    // Group related requests by LAST user message (Claude Code sends duplicates)
+    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}` };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -431,7 +440,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
       tool_choice: anthropicToolChoice,
       systemPrompt,
-      sessionId: `req_${Math.random().toString(36).slice(2)}`, // stateless: fresh web chat session per request
+      sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}`,
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
@@ -454,12 +463,10 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
         if (evt.type === 'thinking_delta' && evt.delta) {
-          // Emit thinking as a separate content block
-          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
-          blockIndex++;
-          res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } })}\n\n`);
-          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'thinking_delta', thinking: evt.delta } })}\n\n`);
-          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
+          // Emit thinking as regular text (Anthropic has no separate thinking block)
+          streamText += evt.delta;
+          if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
         } else if (evt.type === 'text_delta' && evt.delta) {
           if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
           streamText += evt.delta;
@@ -506,6 +513,10 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
           }
         }
       }
+
+      // Merge thinking into content if no explicit text (Anthropic has no thinking block)
+      if (!fullContent && fullThinking) fullContent = fullThinking;
+      else if (fullThinking && fullContent.length < 50) fullContent = fullThinking + '\n\n' + fullContent;
 
       const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
       const content: Array<Record<string, unknown>> = [];
