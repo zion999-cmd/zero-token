@@ -1,6 +1,10 @@
 # My Zero Token
 
-免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI 兼容的 API**。
+免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI / Anthropic 兼容的 API**。
+
+> **状态：** 7 个供应商可用。OpenAI API 稳定。Anthropic API 基础可用——Claude Code 能连接并返回正确内容，但多轮对话中偶有上下文错位（Web Chat 模型与官方 API 的 thinking/reasoning 分离机制不同）。
+> 
+> `express.json({limit:'50mb'})` 是必须的——Claude Code 的请求体可达 120KB+。
 
 ## 支持的供应商
 
@@ -244,6 +248,12 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 ### `POST /v1/messages` (Anthropic Messages API)
 
 Claude Code、OpenClaw 等工具使用的 Anthropic 兼容接口。
+
+- 支持 `thinking` content block（匹配 DeepSeek 官方 API 格式）
+- 支持 `tool_choice`（`auto`/`any`/`none`/`tool`）
+- 支持 Anthropic `input_schema` 工具格式（自动转换为 OpenAI `parameters`）
+- 支持 `system` 参数（字符串或 ContentBlock 数组）
+- 已知限制：Web Chat 模型的 thinking/reasoning 与官方 API 不同——官方模型输出分离的 `thinking` + `text` 块，Web Chat 输出混在一起。多轮对话中模型偶有上下文错位。
 
 ```bash
 # 非流式
