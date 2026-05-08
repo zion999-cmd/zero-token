@@ -60,6 +60,27 @@ const API_KEY = loadApiKey();
 const app = express();
 app.use(express.json());
 
+// ── Request tracing middleware ────────────────────────
+app.use((req: Request, res: Response, next) => {
+  if (!req.path.startsWith('/v1/')) return next();
+  const bodyLen = req.headers['content-length'] || JSON.stringify(req.body || '').length;
+  const ua = (req.headers['user-agent'] || '').slice(0, 60);
+  console.log(`[CLI→GW] ${req.method} ${req.path} body=${Number(bodyLen).toLocaleString()}B UA=${ua}`);
+  // Log response
+  const origJson = res.json.bind(res);
+  res.json = function(obj: unknown) {
+    const s = JSON.stringify(obj);
+    console.log(`[GW→CLI] ${req.path} res=${s.length}B`);
+    return origJson(obj);
+  };
+  const origEnd = res.end.bind(res);
+  res.end = function(...args: unknown[]) {
+    console.log(`[GW→CLI] ${req.path} stream_end`);
+    return origEnd(...args);
+  };
+  next();
+});
+
 // ── Auth middleware (OpenAI-compatible) ────────────────
 
 if (API_KEY) {
