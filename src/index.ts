@@ -58,14 +58,12 @@ function loadApiKey(): string {
 const API_KEY = loadApiKey();
 
 const app = express();
-app.use(express.json());
-
-// ── Request tracing middleware ────────────────────────
+// ── Request tracing (BEFORE body parser to catch large requests) ─
 app.use((req: Request, res: Response, next) => {
   if (!req.path.startsWith('/v1/')) return next();
-  const bodyLen = req.headers['content-length'] || JSON.stringify(req.body || '').length;
-  const ua = (req.headers['user-agent'] || '').slice(0, 60);
-  console.log(`[CLI→GW] ${req.method} ${req.path} body=${Number(bodyLen).toLocaleString()}B UA=${ua}`);
+  const cl = req.headers['content-length'] || '?';
+  const ua = (req.headers['user-agent'] || '').slice(0, 80);
+  console.log(`[CLI→GW] ${req.method} ${req.path} content-length=${cl} UA=${ua}`);
   // Log response
   const origJson = res.json.bind(res);
   res.json = function(obj: unknown) {
@@ -80,6 +78,8 @@ app.use((req: Request, res: Response, next) => {
   };
   next();
 });
+
+app.use(express.json({ limit: '50mb' }));
 
 // ── Auth middleware (OpenAI-compatible) ────────────────
 
