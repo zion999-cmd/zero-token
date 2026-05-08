@@ -442,7 +442,6 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       systemPrompt,
       sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}`,
     };
-    };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
     const t0 = Date.now();
