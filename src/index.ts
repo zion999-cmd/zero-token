@@ -114,8 +114,20 @@ app.get('/v1/models', (_req: Request, res: Response) => {
 });
 
 app.post('/v1/chat/completions', async (req: Request, res: Response) => {
+  // Truncate oversized requests (Claude Code sends full history with large files)
+  const rawMessages = (req.body.messages || []) as Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
+  const messages = rawMessages.slice(-20).map(m => {
+    if (typeof m.content === 'string' && m.content.length > 100_000) {
+      return { ...m, content: m.content.slice(0, 100_000) + '…[truncated]' };
+    }
+    if (Array.isArray(m.content)) {
+      return { ...m, content: m.content.map(p => p.type === 'text' && p.text && p.text.length > 100_000 ? { ...p, text: p.text.slice(0, 100_000) + '…[truncated]' } : p) };
+    }
+    return m;
+  });
+
   // Accept OpenAI SDK params
-  const { model, messages, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop } = req.body;
+  const { model, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop } = req.body;
   void temperature; void top_p; void n; void stop;
   // Web models don't have strict token limits, but truncate to avoid 20MB context overflow
   // Honour max_tokens if provided, otherwise no limit
