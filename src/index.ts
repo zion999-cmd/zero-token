@@ -107,6 +107,15 @@ if (API_KEY) {
   console.log('API key auth enabled');
 }
 
+function getLastUserKey(messages: Array<{ role: string; content: unknown }>): string {
+  const last = [...messages].reverse().find(m => m.role === 'user');
+  if (!last) return 'default';
+  let text = '';
+  if (typeof last.content === 'string') text = last.content;
+  else if (Array.isArray(last.content)) text = last.content.filter((p: Record<string, unknown>) => p.type === 'text').map((p: Record<string, unknown>) => (p.text as string) || '').join('');
+  return text.slice(0, 80).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').slice(0, 40) || 'default';
+}
+
 app.get('/', (_req: Request, res: Response) => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf-8');
   res.send(html.replace('</head>', `<script>window.MYZT_API_KEY=${JSON.stringify(API_KEY)}</script></head>`));
@@ -183,9 +192,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
     // Group related requests by LAST user message (Claude Code sends duplicates)
-    const lastUser = [...(messages as Array<{ role: string; content: string }>)].reverse().find(m => m.role === 'user');
-    const msgKey = lastUser?.content?.slice(0, 80) || 'default';
-    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${msgKey.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').slice(0, 40)}` };
+    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}` };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -433,7 +440,8 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
       tool_choice: anthropicToolChoice,
       systemPrompt,
-      sessionId: `req_${(messages as Array<{ role: string; content: string }>).reverse().find(m => m.role === 'user')?.content?.slice(0, 80)?.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').slice(0, 40) || 'default'}`,
+      sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}`,
+    };
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
