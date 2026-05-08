@@ -114,9 +114,12 @@ app.get('/v1/models', (_req: Request, res: Response) => {
 });
 
 app.post('/v1/chat/completions', async (req: Request, res: Response) => {
-  // Accept but ignore OpenAI SDK params (web models don't support them)
+  // Accept OpenAI SDK params
   const { model, messages, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop } = req.body;
-  void temperature; void max_tokens; void top_p; void n; void stop;
+  void temperature; void top_p; void n; void stop;
+  // Web models don't have strict token limits, but truncate to avoid 20MB context overflow
+  // Honour max_tokens if provided, otherwise no limit
+  const maxOutput = max_tokens || Infinity;
 
   if (!model) {
     return res.status(400).json({
@@ -257,6 +260,10 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         });
       }
 
+      // Truncate excessively large responses (Grok DOM captures page junk)
+      if (fullContent.length > maxOutput) fullContent = fullContent.slice(0, maxOutput) + '…';
+      if (fullThinking.length > maxOutput) fullThinking = fullThinking.slice(0, maxOutput) + '…';
+
       // Build OpenAI-compatible response
       const message: Record<string, unknown> = { role: 'assistant' };
       if (fullContent) message.content = fullContent;
@@ -294,6 +301,136 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     });
   }
 });
+
+// ── Anthropic Messages API (/v1/messages) ─────────────
+
+app.post('/v1/messages', async (req: Request, res: Response) => {
+  const {
+    model, messages, system: systemRaw,
+    max_tokens = 32000, stream = false,
+    tools: toolsRaw, tool_choice,
+  }: {
+    model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
+    system?: string | Array<{ type: string; text: string }>;
+    max_tokens?: number; stream?: boolean;
+    tools?: Array<Record<string, unknown>>; tool_choice?: string | { type: string; name?: string };
+  } = req.body;
+
+  if (!model) {
+    return res.status(400).json({ type: 'error', error: { type: 'invalid_request_error', message: 'model is required' } });
+  }
+
+  const apiId = model.split('/')[0];
+  const factory = getWebStreamFactory(apiId);
+  if (!factory) {
+    return res.status(400).json({ type: 'error', error: { type: 'invalid_request_error', message: `Unknown model: ${model}` } });
+  }
+
+  let cookie = (req.headers['x-cookie'] as string) || req.body.cookie || '';
+  if (!cookie) cookie = getCookieForProvider(apiId);
+  if (!cookie) {
+    return res.status(400).json({ type: 'error', error: { type: 'authentication_error', message: 'Run ./onboard.sh to authorize' } });
+  }
+
+  // Normalize Anthropic system prompt
+  let systemPrompt = '';
+  if (typeof systemRaw === 'string') systemPrompt = systemRaw;
+  else if (Array.isArray(systemRaw)) systemPrompt = systemRaw.filter(s => s.type === 'text').map(s => s.text).join('\n');
+
+  try {
+    const streamFn = factory(cookie);
+    // Map Anthropic messages to internal format; inject system prompt as first user message
+    const internalMsgs = messages.map(m => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
+    const context = {
+      messages: internalMsgs,
+      tools: toolsRaw || [],
+      systemPrompt,
+    };
+    const modelArg = { api: apiId, provider: apiId, id: model };
+    const msgId = `msg_${Date.now().toString(36)}`;
+
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      // message_start
+      res.write(`event: message_start\ndata: ${JSON.stringify({
+        type: 'message_start', message: { id: msgId, type: 'message', role: 'assistant', content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 1 } },
+      })}\n\n`);
+      // ping
+      res.write(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
+
+      let blockIndex = -1, textBlockOpen = false;
+      for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
+        const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
+        if (evt.type === 'text_delta' && evt.delta) {
+          if (!textBlockOpen) {
+            blockIndex++;
+            res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`);
+            textBlockOpen = true;
+          }
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
+        } else if (evt.type === 'toolcall_start' && evt.toolCall) {
+          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
+          blockIndex++;
+          const tc = evt.toolCall;
+          res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: tc.id, name: tc.name, input: {} } })}\n\n`);
+          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: JSON.stringify(tc.arguments) } })}\n\n`);
+          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
+        } else if (evt.type === 'done') {
+          if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); }
+          const stopReason = (evt as Record<string, unknown>).stopReason as string || 'stop';
+          const anthropicStop = stopReason === 'toolUse' ? 'tool_use' : 'end_turn';
+          res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: anthropicStop, stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
+          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+        }
+      }
+      if (!res.writableEnded) {
+        res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
+        res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+      }
+      res.end();
+    } else {
+      let fullContent = '', finishReason = 'stop';
+      const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
+      for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
+        const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> }; message?: { content?: Array<{ type: string; text?: string; name?: string; arguments?: Record<string, unknown>; id?: string }>; stopReason?: string }; stopReason?: string };
+        if (evt.type === 'text_delta') fullContent += evt.delta || '';
+        else if (evt.type === 'toolcall_end' && evt.toolCall) toolCalls.push(evt.toolCall);
+        else if (evt.type === 'done') {
+          finishReason = evt.stopReason || evt.message?.stopReason || 'stop';
+          if (evt.message?.content) {
+            for (const part of evt.message.content) {
+              if (part.type === 'text' && part.text) fullContent = part.text;
+              else if (part.type === 'toolCall' && part.name) toolCalls.push({ id: (part as Record<string,string>).id || '', name: part.name, arguments: part.arguments || {} });
+            }
+          }
+        }
+      }
+
+      const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
+      const content: Array<Record<string, unknown>> = [];
+      if (fullContent) content.push({ type: 'text', text: fullContent.slice(0, max_tokens) });
+      for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
+      if (content.length === 0) content.push({ type: 'text', text: '' });
+
+      res.json({
+        id: msgId, type: 'message', role: 'assistant', content, model,
+        stop_reason: anthropicStop, stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+    }
+  } catch (error: unknown) {
+    console.error('Anthropic API error:', error);
+    res.status(500).json({ type: 'error', error: { type: 'api_error', message: error instanceof Error ? error.message : 'Unknown error' } });
+  }
+});
+
+// ── Start server ─────────────────────────────────────
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
