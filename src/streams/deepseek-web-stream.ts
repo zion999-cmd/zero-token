@@ -268,6 +268,9 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
           "WebSearch",
           "WebFetch",
         ]);
+        // DS-internal tools that should NOT be forwarded to CCC as tool_use blocks.
+        // These are handled transparently by DS and must be suppressed before reaching the gateway.
+        const INTERNAL_TOOLS = new Set(["web_search"]);
 
         const emitDelta = (
           type: "text" | "thinking" | "toolcall",
@@ -275,6 +278,15 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
           forceId?: string,
         ) => {
           if (delta === "" && type !== "toolcall") {
+            return;
+          }
+          // Suppress internal DS tools (e.g. web_search) from being forwarded upstream.
+          // These are DS-internal tool calls that CCC cannot execute. If we forward them,
+          // CCC receives an unknown tool_use with wrong stop_reason (end_turn instead of
+          // tool_use, because INTERNAL_TOOLS are filtered from finalContent). Suppressing
+          // here prevents gateway/CCC confusion. DS search results are incorporated
+          // invisibly into DS's subsequent response text.
+          if (type === "toolcall" && INTERNAL_TOOLS.has(currentToolName)) {
             return;
           }
 
@@ -430,7 +442,11 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
               tagBuffer.match(
                 /<tool_call\s+(?:id=['"]?([^'"]+)['"]?\s+)?name=['"]?([^'"]+)['"]?(?:\s+id=['"]?([^'"]+)['"]?)?\s*>/i,
               ) || tagBuffer.match(/<tool_call\s+id=['"]?([^'"]+)['"]?\s*>/i);
-            const toolCallEndMatch = tagBuffer.match(/<\/tool_call\b[^<>]*>/i);
+            // Match </tool_call> or </ToolName> (DS sometimes closes with the tool name, e.g. </Write>)
+            const toolCallEndMatch = tagBuffer.match(/<\/tool_call\b[^<>]*>/i) ||
+              (currentMode === "tool_call" && currentToolName
+                ? tagBuffer.match(new RegExp(`<\\/${currentToolName}\\b[^<>]*>`, "i"))
+                : null);
             // Plain-text tool calls emitted by some web models.
             // Format 1: Write({"key":"value"}) — JSON object args
             // Format 2: Glob(pattern="**/*", path="...") — Python kwargs (possibly with nested parens/triple-quotes)
@@ -942,9 +958,7 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
           `[DeepseekWebStream] Stream completed. Content: ${accumulatedContent.length}, reasoning: ${accumulatedReasoning.length}, toolCalls: ${accumulatedToolCalls.length}`,
         );
 
-        // Filter internal tools from final message as per original logic,
-        // but keep them in the stream parts for UI continuity.
-        const INTERNAL_TOOLS = new Set(["web_search"]);
+        // Filter internal tools from final message (already suppressed in stream events above).
         const finalContent = contentParts.filter((part) => {
           if (part.type === "toolCall") {
             return !INTERNAL_TOOLS.has(part.name);
@@ -983,6 +997,17 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
           type: "done",
           reason: assistantMessage.stopReason as "stop" | "length" | "toolUse",
           message: assistantMessage,
+        });
+        // Log summary at stream end so we can diagnose DS decisions without joining
+        // hundreds of delta records. thinkingTail lets us see why DS chose silence/text.
+        debugLog('upstream', {
+          layer: 'upstream', id: messageId,
+          evtType: 'done',
+          stopReason: assistantMessage.stopReason,
+          textLen: accumulatedContent.length,
+          thinkingLen: accumulatedReasoning.length,
+          textPreview: accumulatedContent.slice(0, 200),
+          thinkingTail: accumulatedReasoning.slice(-400),
         });
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);

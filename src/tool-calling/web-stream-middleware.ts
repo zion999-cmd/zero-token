@@ -175,7 +175,8 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
       if (!content) continue;
       content = stripInboundMeta(content);
       // toolResult appears on the "user" side of the conversation turn
-      const label = m.role === "user" || m.role === "toolResult" ? "User" : m.role === "assistant" ? "Assistant" : m.role;
+      const role = (m as { role: string }).role;
+      const label = role === "user" || role === "toolResult" ? "User" : role === "assistant" ? "Assistant" : role;
       const line = `${label}: ${content}\n`;
       if (totalChars + line.length > MAX_CONTEXT_CHARS) break;
       contextLines.unshift(line); // insert at front to maintain chronological order
@@ -185,18 +186,16 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // If there's conversation history, instruct model to respond to the latest message
     const hasHistory = contextText.includes('\nAssistant:');
 
-    // Detect whether the last meaningful message is a tool_result.
+    // Detect whether the LAST message is a tool_result.
     // When it is, append a strong hint to prevent DS from re-running the tool.
-    // We still send FULL history so that fresh DS sessions (after bucket transitions)
-    // have complete context without relying on DS session memory.
-    const lastMsgForCheck = [...recentMessages].reverse().find(m => {
-      if (m.role === "toolResult") return true;
-      if (m.role === "user" && Array.isArray(m.content)) {
-        return (m.content as Array<{type:string}>).some(p => p.type === "tool_result");
-      }
-      return false;
-    });
-    const endsWithToolResult = !!lastMsgForCheck;
+    // Must check only the final message — searching backwards would incorrectly
+    // match tool_results buried in history when a new user task follows them.
+    const lastRecentMsg = recentMessages[recentMessages.length - 1];
+    const endsWithToolResult = !!lastRecentMsg && (
+      lastRecentMsg.role === "toolResult" ||
+      (lastRecentMsg.role === "user" && Array.isArray(lastRecentMsg.content) &&
+        (lastRecentMsg.content as Array<{type: string}>).some(p => p.type === "tool_result"))
+    );
 
     // Build the history portion of the user message first (no hint yet)
     const historyText = contextText || "Hi";
@@ -221,7 +220,7 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     }
     // Append user-defined tools with provider-specific prompt format
     if (explicitToolRequest) {
-      const userTools = (context.tools || []) as Array<{
+      const userTools = (context.tools || []) as unknown as Array<{
         type: string;
         function?: { name?: string; description?: string; parameters?: Record<string, unknown> };
       }>;
@@ -242,7 +241,7 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // before generating a response — preventing it from "forgetting" the tool format
     // or entering suggestion mode (predicting the next user message).
     const continuationHint = endsWithToolResult
-      ? `\n\n[INSTRUCTION]: The tool above has already executed and the result is shown. Your ONLY job now is to write a final text reply summarizing what was done. Do NOT call any tools.`
+      ? `\n\n[INSTRUCTION]: A tool has just executed and the result is above. If the overall task is NOT yet complete, output the NEXT tool call needed. If ALL steps are done, write a concise text reply summarizing what was accomplished. Do NOT repeat a tool call that was just executed.`
       : injectTools
         ? `\n\n[INSTRUCTION]: You are the AI assistant replying to the latest User message above. If a tool call is needed, output ONLY the tool call XML (e.g. <tool_call name="Bash">{"command":"..."}</tool_call>). Do NOT predict or write what the user might say next.`
         : `\n\n[INSTRUCTION]: You are the AI assistant. Reply to the latest User message above.`;
@@ -253,6 +252,10 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // toolSection is placed AFTER the history so it stays in "working memory"
     // when DS generates its response.
     const rawSystem = (context as unknown as { systemPrompt?: string }).systemPrompt || "";
+
+    // Log full rawSystem tail so we can inspect what CCC sends.
+    debugLog('middleware', { layer: 'system-prompt', rawSystemLen: rawSystem.length, rawSystemTail: rawSystem.slice(-800) });
+
     const noCoT = "\nIMPORTANT: If you need to reason before answering, wrap ALL reasoning inside <think>...</think> tags. Your visible reply must start IMMEDIATELY after </think> with the final answer only — no preamble, no narration, no meta-commentary.";
     const systemSection = rawSystem
       ? `[System]: ${rawSystem}${noCoT}\n\n`
@@ -264,7 +267,13 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     console.log(
       `[WebStreamMiddleware] api=${api} injectTools=${injectTools} promptLen=${prompt.length} historyLen=${historyText.length} hasSystem=${!!systemSection}`,
     );
-    debugLog('middleware', { layer: 'prompt', api, injectTools, promptLen: prompt.length, prompt: prompt.slice(0, 500) });
+    debugLog('middleware', {
+      layer: 'prompt', api, injectTools,
+      promptLen: prompt.length,
+      endsWithToolResult,
+      promptHead: prompt.slice(0, 600),
+      promptTail: prompt.slice(-600),
+    });
 
     // Create modified context with just the user message.
     // Spread the original context to preserve the full type, then override.
@@ -319,7 +328,7 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
             }
 
             console.log(`[WebStreamMiddleware] extractToolCall textLen=${accumulatedText.length} preview=${accumulatedText.substring(0,200)}`);
-              const toolCall = extractToolCall(accumulatedText);
+            const toolCall = extractToolCall(accumulatedText);
 
             if (toolCall) {
               toolCallEmitted = true;
@@ -371,12 +380,14 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
               // No tool call — forward the done event as-is
               wrappedStream.push(event);
             }
-          } else if (!toolCallEmitted) {
+          } else {
             // Forward non-done events as-is.
-            // Track upstream toolcall_end to avoid re-parsing in extractToolCall.
+            // Track upstream toolcall_end to avoid re-parsing in extractToolCall at done.
+            // IMPORTANT: Do NOT set toolCallEmitted=true here — DS often emits multiple
+            // tool calls in one response. We must forward ALL of them so the gateway can
+            // emit all tool_use blocks and CCC can execute each one.
             if (event.type === "toolcall_end") {
               upstreamToolCallForwarded = true;
-              toolCallEmitted = true;
             }
             wrappedStream.push(event);
           }

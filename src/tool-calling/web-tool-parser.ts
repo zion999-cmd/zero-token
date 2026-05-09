@@ -19,8 +19,9 @@ const FENCED_REGEX = /```tool_json\s*\n?\s*(\{[\s\S]*?\})\}?\s*\n?\s*```/;
 // Bare JSON format
 const BARE_JSON_REGEX = /\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[\s\S]*?\})\s*\}/;
 
-// XML tool_call format (DeepSeek compat)
-const XML_TOOL_REGEX = /<tool_call[^>]*>([\s\S]*?)<\/tool_call>/;
+// XML tool_call format: <tool_call name="ToolName">{args}</tool_call>
+// Note: tool name is in the attribute, not the JSON content.
+const XML_TOOL_REGEX = /<tool_call(?:\s+name="([^"]*)")?[^>]*>([\s\S]*?)<\/tool_call>/;
 
 export function extractToolCall(text: string): ParsedToolCall | null {
   // 1. Try fenced format
@@ -40,10 +41,23 @@ export function extractToolCall(text: string): ParsedToolCall | null {
     }
   }
 
-  // 3. Try XML format
+  // 3. Try XML format: <tool_call name="ToolName">{args}</tool_call>
+  // Tool name is in the attribute; inner content is the args JSON.
   const xml = XML_TOOL_REGEX.exec(text);
   if (xml) {
-    return parseToolJson(xml[1]);
+    const attrName = xml[1]; // may be undefined if no name= attribute
+    const content = xml[2];
+    if (attrName) {
+      // Preferred path: name from attribute, content is plain args object
+      try {
+        const params = JSON.parse(content.trim());
+        if (params && typeof params === "object" && !Array.isArray(params)) {
+          return { tool: attrName, parameters: params as Record<string, unknown> };
+        }
+      } catch { /* fall through */ }
+    }
+    // Fallback: try parsing content as {"tool":"...","parameters":{...}}
+    return parseToolJson(content);
   }
 
   // 4. "Tool call: X\nArguments: {json}" — some models (e.g. DS when given long history) output this
