@@ -8,6 +8,7 @@ import {
   type ToolCall,
   type ToolResultMessage,
 } from "@mariozechner/pi-ai";
+import { debugLog } from "../debug-log.js";
 import {
   DeepSeekWebClient,
   type DeepSeekWebClientOptions,
@@ -56,6 +57,11 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
         let dsSessionId = sessionMap.get(sessionKey);
         let parentId = parentMessageMap.get(sessionKey);
 
+        // Each session key (bucket) gets its own independent DS web chat session.
+        // Cross-bucket fallback was removed because reusing an earlier-bucket session
+        // causes DS to conflate different tasks (e.g. /init session memory leaks into
+        // algorithm-writing turns). Middleware always sends full history in the prompt,
+        // so a fresh DS session has complete context without needing prior session memory.
         if (!dsSessionId) {
           const session = await client.createChatSession();
           dsSessionId = session.chat_session_id || "";
@@ -136,6 +142,14 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
           }
 
           prompt = historyParts.join("\n\n");
+
+          // If the last message in context is from the assistant, DS has nothing to respond to.
+          // Add an implicit continuation to ensure DS generates the next response.
+          const lastCtxMsg = messages[messages.length - 1];
+          if (lastCtxMsg && lastCtxMsg.role === 'assistant') {
+            prompt += "\n\nUser: Please continue with the task.";
+            console.log(`[DeepseekWebStream] Added implicit continuation prompt (last msg was assistant)`);
+          }
         } else {
           // Continuing turn: Check if the last record is a ToolResult or User message
           const lastMsg = messages[messages.length - 1];
@@ -150,6 +164,10 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
               }
             }
             prompt = `\n<tool_response id="${tr.toolCallId}" name="${tr.toolName}">\n${resultText}\n</tool_response>\n\nPlease proceed based on this tool result.`;
+          } else if (lastMsg.role === 'assistant') {
+            // Last message is assistant - DS should continue executing
+            prompt = "Please continue with the task.";
+            console.log(`[DeepseekWebStream] Continuation with assistant-last: sending implicit continue prompt`);
           } else {
             // Standard user message logic
             const lastUserMessage = [...messages].toReversed().find((m) => m.role === "user");
@@ -234,9 +252,22 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
 
         // Stateful parser for tags in the text stream
         let currentMode: "text" | "thinking" | "tool_call" = "text";
+        let currentFragmentType: "THINK" | "RESPONSE" | "OTHER" = "OTHER"; // tracks DeepSeek fragment type
         let currentToolName = "";
         let currentToolIndex = 0;
         let tagBuffer = "";
+        const PLAIN_TOOL_NAMES = new Set([
+          "Write",
+          "Read",
+          "Glob",
+          "Bash",
+          "Edit",
+          "MultiEdit",
+          "LS",
+          "Grep",
+          "WebSearch",
+          "WebFetch",
+        ]);
 
         const emitDelta = (
           type: "text" | "thinking" | "toolcall",
@@ -353,6 +384,42 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
           tagBuffer += delta;
 
           const checkTags = () => {
+            const closeCurrentToolCall = () => {
+              const key = `tool_${currentToolIndex}`;
+              const index = indexMap.get(key);
+              if (index !== undefined) {
+                const part = contentParts[index] as ToolCall;
+                const argStr = accumulatedToolCalls[currentToolIndex].arguments || "{}";
+                try {
+                  part.arguments = JSON.parse(argStr);
+                } catch {
+                  // Fallback: parse XML-style arguments like <path>...</path><content>...</content>
+                  const xmlArgs: Record<string, unknown> = {};
+                  const xmlTagPattern = /<([a-zA-Z_][a-zA-Z0-9_]*)\s*[^>]*>([\s\S]*?)<\/\1>/g;
+                  let xmlMatch;
+                  while ((xmlMatch = xmlTagPattern.exec(argStr)) !== null) {
+                    const xmlKey = xmlMatch[1];
+                    const xmlValue = xmlMatch[2].trim();
+                    try {
+                      xmlArgs[xmlKey] = JSON.parse(xmlValue);
+                    } catch {
+                      xmlArgs[xmlKey] = xmlValue;
+                    }
+                  }
+                  part.arguments = Object.keys(xmlArgs).length > 0 ? xmlArgs : { raw: argStr };
+                }
+                stream.push({
+                  type: "toolcall_end",
+                  contentIndex: index,
+                  toolCall: part,
+                  partial: createPartial(),
+                });
+              }
+              currentMode = "text";
+              currentToolIndex++;
+              currentToolName = "";
+            };
+
             const thinkStartMatch = tagBuffer.match(/<(?:think(?:ing)?|thought)\b[^<>]*>/i);
             const thinkEndMatch = tagBuffer.match(/<\/(?:think(?:ing)?|thought)\b[^<>]*>/i);
             const finalStartMatch = tagBuffer.match(/<final\b[^<>]*>/i);
@@ -364,6 +431,111 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
                 /<tool_call\s+(?:id=['"]?([^'"]+)['"]?\s+)?name=['"]?([^'"]+)['"]?(?:\s+id=['"]?([^'"]+)['"]?)?\s*>/i,
               ) || tagBuffer.match(/<tool_call\s+id=['"]?([^'"]+)['"]?\s*>/i);
             const toolCallEndMatch = tagBuffer.match(/<\/tool_call\b[^<>]*>/i);
+            // Plain-text tool calls emitted by some web models.
+            // Format 1: Write({"key":"value"}) — JSON object args
+            // Format 2: Glob(pattern="**/*", path="...") — Python kwargs (possibly with nested parens/triple-quotes)
+            // Uses balanced-paren finder to handle content with nested ()
+            const findPlainToolCall = (text: string) => {
+              // Pattern 1: ToolName(kwargs) — Python function-call style
+              const re = /\b([A-Z][A-Za-z_]+)\(/g;
+              let m: RegExpExecArray | null;
+              while ((m = re.exec(text)) !== null) {
+                const name = m[1];
+                if (!PLAIN_TOOL_NAMES.has(name)) continue;
+                let depth = 1, i = m.index + m[0].length;
+                let inDouble = false, inSingle = false, inTripleDouble = false, inTripleSingle = false;
+                while (i < text.length && depth > 0) {
+                  if (inTripleDouble) {
+                    if (text.slice(i, i+3) === '"""') { inTripleDouble = false; i += 2; }
+                    else if (text[i] === '\\') i++;
+                  } else if (inTripleSingle) {
+                    if (text.slice(i, i+3) === "'''") { inTripleSingle = false; i += 2; }
+                    else if (text[i] === '\\') i++;
+                  } else if (inDouble) {
+                    if (text[i] === '\\') i++;
+                    else if (text[i] === '"') inDouble = false;
+                  } else if (inSingle) {
+                    if (text[i] === '\\') i++;
+                    else if (text[i] === "'") inSingle = false;
+                  } else {
+                    if (text.slice(i, i+3) === '"""') { inTripleDouble = true; i += 2; }
+                    else if (text.slice(i, i+3) === "'''") { inTripleSingle = true; i += 2; }
+                    else if (text[i] === '"') inDouble = true;
+                    else if (text[i] === "'") inSingle = true;
+                    else if (text[i] === '(') depth++;
+                    else if (text[i] === ')') { depth--; if (depth === 0) { i++; break; } }
+                  }
+                  i++;
+                }
+                if (depth === 0) {
+                  return { index: m.index, len: i - m.index, name, argsStr: text.slice(m.index + m[0].length, i - 1) };
+                }
+              }
+              // Pattern 2: "Tool call: ToolName\nArguments: {json}" — text description style
+              const tcRe = /Tool\s+call:\s*([A-Za-z_][A-Za-z0-9_]*)\s*\n+\s*Arguments?:\s*(\{)/i;
+              const tcM = tcRe.exec(text);
+              if (tcM) {
+                const tcName = tcM[1];
+                if (PLAIN_TOOL_NAMES.has(tcName)) {
+                  const jsonStart = text.indexOf('{', tcM.index + tcM[0].length - 1);
+                  if (jsonStart !== -1) {
+                    let depth2 = 1, jj = jsonStart + 1;
+                    while (jj < text.length && depth2 > 0) {
+                      if (text[jj] === '{') depth2++;
+                      else if (text[jj] === '}') { depth2--; if (depth2 === 0) { jj++; break; } }
+                      else if (text[jj] === '"') { jj++; while (jj < text.length && text[jj] !== '"') { if (text[jj] === '\\') jj++; jj++; } }
+                      jj++;
+                    }
+                    if (depth2 === 0) {
+                      return { index: tcM.index, len: jj - tcM.index, name: tcName, argsStr: text.slice(jsonStart, jj) };
+                    }
+                  }
+                }
+              }
+              return null;
+            };
+            const plainToolCallMatch = findPlainToolCall(tagBuffer);
+
+            // Helper: convert Python kwargs string to JSON (handles triple-quoted strings)
+            const kwargsToJson = (kwargsStr: string): string => {
+              if (kwargsStr.trimStart().startsWith('{')) return kwargsStr;
+              const result: Record<string, unknown> = {};
+              let pos = 0;
+              const skipWs = () => { while (pos < kwargsStr.length && /[\s,]/.test(kwargsStr[pos])) pos++; };
+              while (pos < kwargsStr.length) {
+                skipWs();
+                if (pos >= kwargsStr.length) break;
+                const keyMatch = kwargsStr.slice(pos).match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*/);
+                if (!keyMatch) break;
+                const key = keyMatch[1];
+                pos += keyMatch[0].length;
+                let val: string;
+                if (kwargsStr.startsWith('"""', pos) || kwargsStr.startsWith("'''", pos)) {
+                  const q = kwargsStr.slice(pos, pos + 3);
+                  pos += 3;
+                  const end = kwargsStr.indexOf(q, pos);
+                  val = end >= 0 ? kwargsStr.slice(pos, end) : kwargsStr.slice(pos);
+                  if (end >= 0) pos = end + 3;
+                } else if (kwargsStr[pos] === '"' || kwargsStr[pos] === "'") {
+                  const q = kwargsStr[pos++];
+                  let s = '';
+                  while (pos < kwargsStr.length && kwargsStr[pos] !== q) {
+                    if (kwargsStr[pos] === '\\') { pos++; s += kwargsStr[pos] ?? ''; }
+                    else s += kwargsStr[pos];
+                    pos++;
+                  }
+                  val = s;
+                  if (pos < kwargsStr.length) pos++;
+                } else {
+                  const bareMatch = kwargsStr.slice(pos).match(/^[^,\s)]+/);
+                  val = bareMatch ? bareMatch[0] : '';
+                  pos += val.length;
+                }
+                result[key] = val;
+                const key2 = key; void key2; // suppress unused warning
+              }
+              return JSON.stringify(result);
+            };
             const replyMatch = tagBuffer.match(/\[\[reply_to_current\]\]/i);
             const malformedThinkMatch = tagBuffer.match(/\n?think\s*>/i);
 
@@ -402,6 +574,17 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
                 type: "tool_call_end",
                 idx: toolCallEndMatch ? toolCallEndMatch.index! : -1,
                 len: toolCallEndMatch ? toolCallEndMatch[0].length : 0,
+              },
+              {
+                type: "plain_tool_call",
+                idx: plainToolCallMatch ? plainToolCallMatch.index : -1,
+                len: plainToolCallMatch ? plainToolCallMatch.len : 0,
+                name: plainToolCallMatch ? plainToolCallMatch.name : "",
+                args: plainToolCallMatch
+                  ? (plainToolCallMatch.argsStr.trimStart().startsWith('{')
+                    ? plainToolCallMatch.argsStr
+                    : kwargsToJson(plainToolCallMatch.argsStr))
+                  : "{}",
               },
               {
                 type: "reply_marker",
@@ -447,40 +630,15 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
                 currentToolName = first.name!;
                 const toolId = first.id || `call_${Date.now()}_${currentToolIndex}`;
                 emitDelta("toolcall", "", toolId); // Trigger start event with specific ID
+              } else if (first.type === "plain_tool_call") {
+                currentMode = "tool_call";
+                currentToolName = first.name!;
+                const toolId = `call_${Date.now()}_${currentToolIndex}`;
+                emitDelta("toolcall", "", toolId); // toolcall_start
+                emitDelta("toolcall", first.args || "{}");
+                closeCurrentToolCall();
               } else if (first.type === "tool_call_end") {
-                const key = `tool_${currentToolIndex}`;
-                const index = indexMap.get(key);
-                if (index !== undefined) {
-                  const part = contentParts[index] as ToolCall;
-                  const argStr = accumulatedToolCalls[currentToolIndex].arguments || "{}";
-                  try {
-                    part.arguments = JSON.parse(argStr);
-                  } catch {
-                    // Fallback: parse XML-style arguments like <path>...</path><content>...</content>
-                    const xmlArgs: Record<string, unknown> = {};
-                    const xmlTagPattern = /<([a-zA-Z_][a-zA-Z0-9_]*)\s*[^>]*>([\s\S]*?)<\/\1>/g;
-                    let xmlMatch;
-                    while ((xmlMatch = xmlTagPattern.exec(argStr)) !== null) {
-                      const xmlKey = xmlMatch[1];
-                      const xmlValue = xmlMatch[2].trim();
-                      try {
-                        xmlArgs[xmlKey] = JSON.parse(xmlValue);
-                      } catch {
-                        xmlArgs[xmlKey] = xmlValue;
-                      }
-                    }
-                    part.arguments = Object.keys(xmlArgs).length > 0 ? xmlArgs : { raw: argStr };
-                  }
-                  stream.push({
-                    type: "toolcall_end",
-                    contentIndex: index,
-                    toolCall: part,
-                    partial: createPartial(),
-                  });
-                }
-                currentMode = "text";
-                currentToolIndex++;
-                currentToolName = "";
+                closeCurrentToolCall();
               }
 
               tagBuffer = tagBuffer.slice(first.idx + first.len);
@@ -489,27 +647,101 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
               // No complete tags. Emit "safe" part of buffer.
               // Safe part is anything before the last '<'
               const lastAngle = tagBuffer.lastIndexOf("<");
-              if (lastAngle === -1) {
-                if (currentMode === "thinking") {
-                  emitDelta("thinking", tagBuffer);
-                } else if (currentMode === "tool_call") {
-                  emitDelta("toolcall", tagBuffer);
-                } else {
-                  emitDelta("text", tagBuffer);
+              let holdFromIdx = lastAngle;
+
+              // In text mode, also hold back partial plain-text tool calls so they can
+              // accumulate fully before being matched. This prevents Glob({...}) from
+              // being split across tiny SSE chunks and emitted as text prematurely.
+              if (currentMode === "text") {
+                // Case 1: buffer has an open ToolName( with unbalanced parens
+                // Find if any known tool name has an open paren that's not yet closed
+                const toolOpenRe = /\b([A-Z][A-Za-z_]+)\(/g;
+                let toolOpenMatch: RegExpExecArray | null;
+                while ((toolOpenMatch = toolOpenRe.exec(tagBuffer)) !== null) {
+                  if (!PLAIN_TOOL_NAMES.has(toolOpenMatch[1])) continue;
+                  // Count paren depth from this position
+                  let depth = 1, j = toolOpenMatch.index + toolOpenMatch[0].length;
+                  let inD = false, inS = false, inTD = false, inTS = false;
+                  while (j < tagBuffer.length && depth > 0) {
+                    if (inTD) { if (tagBuffer.slice(j,j+3) === '"""') { inTD = false; j+=2; } else if (tagBuffer[j]==='\\') j++; }
+                    else if (inTS) { if (tagBuffer.slice(j,j+3) === "'''") { inTS = false; j+=2; } else if (tagBuffer[j]==='\\') j++; }
+                    else if (inD) { if (tagBuffer[j]==='\\') j++; else if (tagBuffer[j]==='"') inD = false; }
+                    else if (inS) { if (tagBuffer[j]==='\\') j++; else if (tagBuffer[j]==="'") inS = false; }
+                    else {
+                      if (tagBuffer.slice(j,j+3)==='"""') { inTD=true; j+=2; }
+                      else if (tagBuffer.slice(j,j+3)==="'''") { inTS=true; j+=2; }
+                      else if (tagBuffer[j]==='"') inD=true;
+                      else if (tagBuffer[j]==="'") inS=true;
+                      else if (tagBuffer[j]==='(') depth++;
+                      else if (tagBuffer[j]===')') { depth--; if (depth===0) { j++; break; } }
+                    }
+                    j++;
+                  }
+                  if (depth > 0) {
+                    // Unclosed paren — hold from the tool name
+                    holdFromIdx = holdFromIdx === -1 ? toolOpenMatch.index : Math.min(holdFromIdx, toolOpenMatch.index);
+                  }
                 }
-                tagBuffer = "";
-              } else if (lastAngle >= 0) {
-                const safe = tagBuffer.slice(0, lastAngle);
-                if (currentMode === "thinking") {
-                  emitDelta("thinking", safe);
-                } else if (currentMode === "tool_call") {
-                  emitDelta("toolcall", safe);
-                } else {
-                  emitDelta("text", safe);
+
+                // Case 2b: buffer has "Tool call: ToolName" (multi-line format DS sometimes emits)
+                // Hold from the "Tool" keyword until the Arguments JSON is complete
+                const tcTextRe = /Tool\s+call:\s*([A-Za-z_][A-Za-z0-9_]*)/i;
+                const tcTextHold = tcTextRe.exec(tagBuffer);
+                if (tcTextHold && PLAIN_TOOL_NAMES.has(tcTextHold[1])) {
+                  // Only hold if the JSON part hasn't fully closed yet
+                  const jsonStart = tagBuffer.indexOf('{', tcTextHold.index + tcTextHold[0].length);
+                  if (jsonStart === -1) {
+                    // No '{' yet — hold from the "Tool call" keyword
+                    holdFromIdx = holdFromIdx === -1 ? tcTextHold.index : Math.min(holdFromIdx, tcTextHold.index);
+                  } else {
+                    let depth = 1, jj = jsonStart + 1;
+                    while (jj < tagBuffer.length && depth > 0) {
+                      if (tagBuffer[jj] === '{') depth++;
+                      else if (tagBuffer[jj] === '}') { depth--; if (depth === 0) { jj++; break; } }
+                      else if (tagBuffer[jj] === '"') { jj++; while (jj < tagBuffer.length && tagBuffer[jj] !== '"') { if (tagBuffer[jj] === '\\') jj++; jj++; } }
+                      jj++;
+                    }
+                    if (depth > 0) {
+                      // JSON still open — hold from "Tool call"
+                      holdFromIdx = holdFromIdx === -1 ? tcTextHold.index : Math.min(holdFromIdx, tcTextHold.index);
+                    }
+                    // depth===0 means the full pattern is in the buffer; checkTags() will handle it via findPlainToolCall
+                  }
                 }
-                tagBuffer = tagBuffer.slice(lastAngle);
+
+                // Case 2: buffer ends with a prefix of a known tool name (e.g. "Glo" → Glob)
+                if (holdFromIdx === -1) {
+                  const maxPfx = 12; // longer than the longest tool name
+                  const tail = tagBuffer.slice(-maxPfx);
+                  for (const toolName of PLAIN_TOOL_NAMES) {
+                    for (let len = Math.min(toolName.length, tail.length); len >= 1; len--) {
+                      if (tail.endsWith(toolName.slice(0, len))) {
+                        const ptIdx = tagBuffer.length - len;
+                        holdFromIdx = holdFromIdx === -1 ? ptIdx : Math.min(holdFromIdx, ptIdx);
+                        break;
+                      }
+                    }
+                  }
+                }
+
+                // Case 3: buffer ends with an open code fence (``` without closing ```)
+                // DS often wraps tool calls in ```python\nWrite(...)\n```
+                const openFenceMatch = tagBuffer.match(/```[^\n`]*$/);
+                if (openFenceMatch) {
+                  holdFromIdx = holdFromIdx === -1 ? openFenceMatch.index! : Math.min(holdFromIdx, openFenceMatch.index!);
+                }
               }
-              // If lastAngle is 0, we must keep it in buffer to see if it's a tag
+
+              const emitMode = currentMode === "thinking" ? "thinking" : currentMode === "tool_call" ? "toolcall" : "text";
+              if (holdFromIdx === -1) {
+                emitDelta(emitMode, tagBuffer);
+                tagBuffer = "";
+              } else {
+                const safe = tagBuffer.slice(0, holdFromIdx);
+                if (safe) emitDelta(emitMode, safe);
+                tagBuffer = tagBuffer.slice(holdFromIdx);
+              }
+              // If holdFromIdx is 0 we keep the entire buffer to accumulate more data
             }
           };
 
@@ -536,8 +768,10 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
 
             try {
               const data = JSON.parse(dataStr);
-              // Verbose logging for debugging
-              // console.log(`[DeepseekWebStream] SSE Data: ${dataStr}`);
+              // Verbose SSE debug logging — log full raw dataStr for structure analysis
+              if (dataStr && dataStr !== '[DONE]') {
+                debugLog('sse-raw', { p: data.p, type: data.type, vType: typeof data.v, vPreview: typeof data.v === 'string' ? data.v.slice(0, 80) : JSON.stringify(data.v)?.slice(0, 200), raw: dataStr.slice(0, 500) });
+              }
 
               // Capture session/message continuity
               if (data.response_message_id) {
@@ -562,12 +796,36 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
                 return;
               }
 
-              // 2. Direct string value, content path, or explicit type (XML tags might be here)
+              // 1.5 Fragment APPEND — signals switch between THINK and RESPONSE blocks
+              // e.g. {"p":"response/fragments","o":"APPEND","v":[{"id":3,"type":"RESPONSE","content":"写",...}]}
+              if (data.p === "response/fragments" && Array.isArray(data.v)) {
+                for (const frag of data.v) {
+                  const fragType = frag.type as string;
+                  if (fragType === "THINK") {
+                    currentFragmentType = "THINK";
+                    currentMode = "thinking";
+                    if (frag.content) pushDelta(frag.content, "thinking");
+                  } else if (fragType === "RESPONSE") {
+                    currentFragmentType = "RESPONSE";
+                    currentMode = "text";
+                    if (frag.content) pushDelta(frag.content, "text");
+                  } else if (frag.content) {
+                    pushDelta(frag.content);
+                  }
+                }
+                return;
+              }
+
+              // 2. Incremental content — route based on current fragment type
               if (
                 typeof data.v === "string" &&
                 (!data.p || data.p.includes("content") || data.p.includes("choices"))
               ) {
-                pushDelta(data.v);
+                if (currentFragmentType === "THINK") {
+                  pushDelta(data.v, "thinking");
+                } else {
+                  pushDelta(data.v);
+                }
                 return;
               }
               if (data.type === "text" && typeof data.content === "string") {
@@ -596,7 +854,7 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
               // 2.8 data.v as direct array (DeepSeek sometimes returns this format)
               if (Array.isArray(data.v)) {
                 for (const frag of data.v) {
-                  if (frag.type === "THINKING" || frag.type === "reasoning") {
+                  if (frag.type === "THINK" || frag.type === "THINKING" || frag.type === "reasoning") {
                     pushDelta(frag.content || "", "thinking");
                   } else if (
                     frag.p === "quasi_status" &&
@@ -616,8 +874,14 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
               const fragments = data.v?.response?.fragments;
               if (Array.isArray(fragments)) {
                 for (const frag of fragments) {
-                  if (frag.type === "THINKING" || frag.type === "reasoning") {
+                  if (frag.type === "THINK" || frag.type === "THINKING" || frag.type === "reasoning") {
+                    currentFragmentType = "THINK";
+                    currentMode = "thinking";
                     pushDelta(frag.content || "", "thinking");
+                  } else if (frag.type === "RESPONSE") {
+                    currentFragmentType = "RESPONSE";
+                    currentMode = "text";
+                    if (frag.content) pushDelta(frag.content);
                   } else if (frag.content) {
                     pushDelta(frag.content);
                   }

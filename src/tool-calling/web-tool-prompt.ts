@@ -45,6 +45,7 @@ const CN_TEMPLATE = `工具: ${TOOL_DEFS}
 (plus_one仅为示例，非真实工具)
 
 你的真实工具见上方列表。需要时只回复tool_json块。不需要则直接回答。
+如需推理，必须用<think>...</think>包裹，</think>后直接输出最终答案。
 
 `;
 

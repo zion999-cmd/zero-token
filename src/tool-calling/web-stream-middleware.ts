@@ -19,6 +19,7 @@ import {
 import { stripInboundMeta } from "../streams/strip-inbound-meta.js";
 import { extractToolCall } from "./web-tool-parser.js";
 import { shouldInjectToolPrompt, getToolPrompt, getUserToolPrompt, type UserToolDef } from "./web-tool-prompt.js";
+import { debugLog } from "../debug-log.js";
 
 /**
  * Quick keyword check: does this message likely need tool use?
@@ -103,61 +104,104 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // --- Input rewriting ---
     const messages = context.messages || [];
     const lastMsg = messages[messages.length - 1];
-
-    // Check if this is a tool result feedback (agent loop returning tool execution results)
-    if (lastMsg?.role === "toolResult") {
-      const tr = lastMsg as unknown as {
-        toolCallId?: string;
-        toolName?: string;
-        content?: Array<{ type: string; text?: string }>;
-      };
-      let resultText = "";
-      if (Array.isArray(tr.content)) {
-        for (const part of tr.content) {
-          if (part.type === "text" && part.text) {
-            resultText += part.text;
-          }
-        }
-      }
-      // Format tool result as a user message for web models
-      const feedbackPrompt = `Tool ${tr.toolName || "unknown"} returned: ${resultText}\nPlease answer the original question based on this tool result.`;
-
-      const feedbackContext = Object.assign({}, context, {
-        messages: [{ role: "user" as const, content: feedbackPrompt }],
-        tools: [] as typeof context.tools,
-        systemPrompt: "",
-      });
-      console.log(`[WebStreamMiddleware] tool result feedback, len=${feedbackPrompt.length}`);
-      return streamFn(model, feedbackContext, options);
-    }
+    void lastMsg; // used below for logging only
 
     // Build conversation from recent messages (respecting 1M context window)
     // Web models benefit from having context, not just the last message
     const MAX_CONTEXT_CHARS = 800_000; // leave room for tools + overhead
-    let contextText = "";
     const recentMessages = [...messages].slice(-50); // at most 50 messages
-    for (const m of recentMessages) {
+    // Collect lines from newest → oldest (to respect size limit), then reverse to chronological order
+    const contextLines: string[] = [];
+    let totalChars = 0;
+    for (const m of [...recentMessages].reverse()) {
       let content = "";
-      if (typeof m.content === "string") {
+      if (m.role === "toolResult") {
+        // pi-ai ToolResultMessage format
+        const tr = m as unknown as { toolName?: string; toolCallId?: string; content?: Array<{ type: string; text?: string }> };
+        let resultText = "";
+        if (Array.isArray(tr.content)) {
+          for (const part of tr.content) {
+            if (part.type === "text" && part.text) resultText += part.text;
+          }
+        }
+        content = `<tool_result name="${tr.toolName || "unknown"}">\n${resultText}\n</tool_result>`;
+      } else if (typeof m.content === "string") {
         content = m.content;
       } else if (Array.isArray(m.content)) {
-        content = (m.content as TextContent[])
-          .filter((p) => p.type === "text")
-          .map((p) => p.text)
-          .join("");
+        // Handle mixed content blocks: text, tool_use, tool_result, thinking
+        type ContentPart = {
+          type: string;
+          text?: string;
+          name?: string;
+          id?: string;
+          input?: unknown;
+          tool_use_id?: string;
+          content?: unknown;
+        };
+        const parts = m.content as ContentPart[];
+        const toolUses = parts.filter(p => p.type === "tool_use");
+        const toolResults = parts.filter(p => p.type === "tool_result");
+        const textParts = parts.filter(p => p.type === "text");
+
+        if (toolUses.length > 0) {
+          // Assistant called a tool — include the call so DS knows it already happened
+          content = toolUses
+            .map(tc => `<tool_call name="${tc.name}">${JSON.stringify(tc.input)}</tool_call>`)
+            .join("\n");
+          if (textParts.length > 0) {
+            const txt = textParts.map(p => p.text).join("");
+            if (txt) content = txt + "\n" + content;
+          }
+        } else if (toolResults.length > 0) {
+          // User message containing tool results (Anthropic API format)
+          content = toolResults
+            .map(tr => {
+              let resultText = "";
+              if (typeof tr.content === "string") {
+                resultText = tr.content;
+              } else if (Array.isArray(tr.content)) {
+                resultText = (tr.content as Array<{ type: string; text?: string }>)
+                  .filter(p => p.type === "text")
+                  .map(p => p.text)
+                  .join("");
+              }
+              return `<tool_result tool_use_id="${tr.tool_use_id || ""}">\n${resultText}\n</tool_result>`;
+            })
+            .join("\n");
+        } else {
+          content = textParts.map(p => p.text).join("");
+        }
       }
       if (!content) continue;
       content = stripInboundMeta(content);
-      const label = m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : m.role;
+      // toolResult appears on the "user" side of the conversation turn
+      const label = m.role === "user" || m.role === "toolResult" ? "User" : m.role === "assistant" ? "Assistant" : m.role;
       const line = `${label}: ${content}\n`;
-      if (contextText.length + line.length > MAX_CONTEXT_CHARS) break;
-      contextText = line + contextText; // prepend so newest is last
+      if (totalChars + line.length > MAX_CONTEXT_CHARS) break;
+      contextLines.unshift(line); // insert at front to maintain chronological order
+      totalChars += line.length;
     }
+    const contextText = contextLines.join("");
     // If there's conversation history, instruct model to respond to the latest message
     const hasHistory = contextText.includes('\nAssistant:');
-    const userMessage = hasHistory ? `${contextText}\n(Respond to the latest "User:" message above.)\n` : contextText || "Hi";
 
-    if (!userMessage) {
+    // Detect whether the last meaningful message is a tool_result.
+    // When it is, append a strong hint to prevent DS from re-running the tool.
+    // We still send FULL history so that fresh DS sessions (after bucket transitions)
+    // have complete context without relying on DS session memory.
+    const lastMsgForCheck = [...recentMessages].reverse().find(m => {
+      if (m.role === "toolResult") return true;
+      if (m.role === "user" && Array.isArray(m.content)) {
+        return (m.content as Array<{type:string}>).some(p => p.type === "tool_result");
+      }
+      return false;
+    });
+    const endsWithToolResult = !!lastMsgForCheck;
+
+    // Build the history portion of the user message first (no hint yet)
+    const historyText = contextText || "Hi";
+
+    if (!historyText) {
       return streamFn(model, context, options);
     }
 
@@ -167,7 +211,7 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // Always inject+parse when tools are explicitly passed via API
     const explicitToolRequest = hasAgentTools;
     const injectTools = explicitToolRequest ||
-      (shouldInjectToolPrompt(api) && hasAgentTools && needsToolInjection(userMessage));
+      (shouldInjectToolPrompt(api) && hasAgentTools && needsToolInjection(historyText));
 
     // Build the prompt
     let toolSection = "";
@@ -193,15 +237,37 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
       }
     }
 
-    const prompt = toolSection + userMessage;
+    // Build the final instruction appended AFTER the conversation history.
+    // Placing it here (not before the history) keeps it as the last thing DS reads
+    // before generating a response — preventing it from "forgetting" the tool format
+    // or entering suggestion mode (predicting the next user message).
+    const continuationHint = endsWithToolResult
+      ? `\n\n[INSTRUCTION]: The tool above has already executed and the result is shown. Your ONLY job now is to write a final text reply summarizing what was done. Do NOT call any tools.`
+      : injectTools
+        ? `\n\n[INSTRUCTION]: You are the AI assistant replying to the latest User message above. If a tool call is needed, output ONLY the tool call XML (e.g. <tool_call name="Bash">{"command":"..."}</tool_call>). Do NOT predict or write what the user might say next.`
+        : `\n\n[INSTRUCTION]: You are the AI assistant. Reply to the latest User message above.`;
+
+    const userMessage = `${historyText}${continuationHint}`;
+
+    // Prepend system prompt so web model follows language/behavioral instructions.
+    // toolSection is placed AFTER the history so it stays in "working memory"
+    // when DS generates its response.
+    const rawSystem = (context as unknown as { systemPrompt?: string }).systemPrompt || "";
+    const noCoT = "\nIMPORTANT: If you need to reason before answering, wrap ALL reasoning inside <think>...</think> tags. Your visible reply must start IMMEDIATELY after </think> with the final answer only — no preamble, no narration, no meta-commentary.";
+    const systemSection = rawSystem
+      ? `[System]: ${rawSystem}${noCoT}\n\n`
+      : `[System]: ${noCoT.trim()}\n\n`;
+    // Structure: system → history → toolSection → instruction
+    // Tool section comes AFTER history so DS sees it last (closest to response generation)
+    const prompt = systemSection + historyText + (injectTools ? "\n\n" + toolSection : "") + continuationHint;
 
     console.log(
-      `[WebStreamMiddleware] api=${api} injectTools=${injectTools} promptLen=${prompt.length} userMsgLen=${userMessage.length}`,
+      `[WebStreamMiddleware] api=${api} injectTools=${injectTools} promptLen=${prompt.length} historyLen=${historyText.length} hasSystem=${!!systemSection}`,
     );
+    debugLog('middleware', { layer: 'prompt', api, injectTools, promptLen: prompt.length, prompt: prompt.slice(0, 500) });
 
     // Create modified context with just the user message.
     // Spread the original context to preserve the full type, then override.
-    
     const modifiedContext = Object.assign({}, context, {
       messages: [{ role: "user" as const, content: prompt }],
       tools: [] as typeof context.tools,
@@ -224,8 +290,14 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
         const originalStream = await Promise.resolve(originalStreamOrPromise);
         let accumulatedText = "";
         let toolCallEmitted = false;
+        // Track whether upstream stream already emitted a toolcall_end event.
+        // If it did, the tool call has already been forwarded and we must NOT run
+        // extractToolCall again on the done event — that would emit a second,
+        // duplicate tool call (e.g. double Write → overwrite prompt in Claude Code).
+        let upstreamToolCallForwarded = false;
 
         for await (const event of originalStream) {
+          debugLog('middleware', { layer: 'upstream-event', api, evtType: event.type, deltaLen: (event as {delta?: string}).delta?.length ?? 0, deltaPreview: (event as {delta?: string}).delta?.slice(0, 80) });
           // On stream completion, check final message for tool calls
           if (event.type === "done") {
             // Use final message content (already deduplicated by stream parser)
@@ -237,6 +309,13 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
                   accumulatedText = part.text;
                 }
               }
+            }
+
+            // If upstream already emitted a toolcall_end (plain-text tool call parsed by
+            // the provider stream), skip extractToolCall to avoid emitting a duplicate.
+            if (upstreamToolCallForwarded) {
+              wrappedStream.push(event);
+              break;
             }
 
             console.log(`[WebStreamMiddleware] extractToolCall textLen=${accumulatedText.length} preview=${accumulatedText.substring(0,200)}`);
@@ -293,7 +372,12 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
               wrappedStream.push(event);
             }
           } else if (!toolCallEmitted) {
-            // Forward non-done events as-is
+            // Forward non-done events as-is.
+            // Track upstream toolcall_end to avoid re-parsing in extractToolCall.
+            if (event.type === "toolcall_end") {
+              upstreamToolCallForwarded = true;
+              toolCallEmitted = true;
+            }
             wrappedStream.push(event);
           }
         }

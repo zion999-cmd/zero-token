@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'node:fs';
 import { getWebStreamFactory, listWebStreamApiIds } from './streams/web-stream-factories.js';
+import { setDebugEnabled, debugLog } from './debug-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,7 +56,17 @@ function loadApiKey(): string {
   }
 }
 
+function loadDebugFlag(): boolean {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    return cfg.debug === true;
+  } catch {
+    return false;
+  }
+}
+
 const API_KEY = loadApiKey();
+setDebugEnabled(loadDebugFlag() || process.env.DEBUG_SSE === '1');
 
 const app = express();
 // ── Request tracing (BEFORE body parser to catch large requests) ─
@@ -107,13 +118,39 @@ if (API_KEY) {
   console.log('API key auth enabled');
 }
 
-function getLastUserKey(messages: Array<{ role: string; content: unknown }>): string {
-  const last = [...messages].reverse().find(m => m.role === 'user');
-  if (!last) return 'default';
-  let text = '';
-  if (typeof last.content === 'string') text = last.content;
-  else if (Array.isArray(last.content)) text = last.content.filter((p: Record<string, unknown>) => p.type === 'text').map((p: Record<string, unknown>) => (p.text as string) || '').join('');
-  return text.slice(0, 80).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').slice(0, 40) || 'default';
+// Simple but collision-resistant hash for session key generation.
+// Using djb2-style hash on the full string avoids the truncation collision
+// that occurs when two different long messages share the same first N characters.
+function hashStr(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+// Derive a stable session key that identifies a logical conversation.
+// Key: hash(firstUserMessage) + msgCount bucket
+// - firstUserMessage stays constant across all turns of the same conversation
+// - sysHash intentionally omitted: Claude Code's system prompt contains dynamic
+//   fields (cch, session tokens) that change every turn, breaking cross-turn lookup
+// - msgCount bucket separates suggestion/title requests from main conversation turns
+function getConversationKey(messages: Array<{ role: string; content: unknown }>, _systemPrompt?: string): string {
+  const firstUser = messages.find(m => m.role === 'user');
+  let userText = '';
+  if (firstUser) {
+    if (typeof firstUser.content === 'string') userText = firstUser.content;
+    else if (Array.isArray(firstUser.content)) {
+      userText = (firstUser.content as Array<Record<string, unknown>>)
+        .filter(p => p.type === 'text').map(p => (p.text as string) || '').join('');
+    }
+  }
+  const userHash = hashStr(userText);
+  // Bucket by number of messages to separate initial turn from continuation turns.
+  // Turn 1 (msgs≤2), Turn 2+ (msgs 3-6), longer conversations (msgs 7+)
+  const msgBucket = messages.length <= 2 ? 'a' : messages.length <= 6 ? 'b' : 'c';
+  return `${userHash}_${msgBucket}`;
 }
 
 app.get('/', (_req: Request, res: Response) => {
@@ -142,18 +179,31 @@ app.get('/v1/models', (_req: Request, res: Response) => {
     'perplexity-web': 'perplexity-chat',
     'xiaomimo-web': 'xiaomimo-chat',
   };
+  const modelData = listWebStreamApiIds().map((id) => {
+    const authorized = `${id}:default` in profiles;
+    const fullId = `${id}/${MODEL_NAMES[id] || id}`;
+    const createdAt = new Date().toISOString();
+    return {
+      // OpenAI fields
+      id: fullId,
+      object: 'model',
+      created: Math.floor(Date.now() / 1000),
+      owned_by: id,
+      // Anthropic fields
+      type: 'model',
+      display_name: fullId,
+      created_at: createdAt,
+      // Custom
+      authorized,
+    };
+  });
   res.json({
+    // OpenAI & Anthropic dual-compatible
     object: 'list',
-    data: listWebStreamApiIds().map((id) => {
-      const authorized = `${id}:default` in profiles;
-      return {
-        id: `${id}/${MODEL_NAMES[id] || id}`,
-        object: 'model',
-        created: Date.now(),
-        owned_by: id,
-        authorized,
-      };
-    }),
+    has_more: false,
+    first_id: modelData[0]?.id ?? null,
+    last_id: modelData[modelData.length - 1]?.id ?? null,
+    data: modelData,
   });
 });
 
@@ -192,7 +242,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
     // Group related requests by LAST user message (Claude Code sends duplicates)
-    const context = { messages, tools: tools || [], tool_choice, sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}` };
+    const context = { messages, tools: tools || [], tool_choice, sessionId: `conv_${getConversationKey(messages as Array<{ role: string; content: unknown }>)}` };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -207,7 +257,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('x-request-id', chatId);
 
-      let hasContent = false;
+      let streamContent = '';
       let currentToolCalls: Array<{ index: number; id: string; name: string; arguments: string }> = [];
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; contentIndex?: number; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
@@ -218,14 +268,14 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
             system_fingerprint: 'fp_myzt_001',
           })}\n\n`);
         } else if (evt.type === 'text_delta') {
-          hasContent = true;
+          streamContent += evt.delta || '';
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: { role: 'assistant', content: evt.delta }, finish_reason: null }],
           })}\n\n`);
         } else if (evt.type === 'text_start') {
           if (evt.delta) {
-            hasContent = true;
+            streamContent += evt.delta;
             res.write(`data: ${JSON.stringify({
               id: chatId, object: 'chat.completion.chunk', created, model,
               choices: [{ index: 0, delta: { role: 'assistant', content: evt.delta }, finish_reason: null }],
@@ -233,10 +283,11 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           }
         } else if (evt.type === 'toolcall_start') {
           const tc = evt.toolCall!;
-          currentToolCalls.push({ index: currentToolCalls.length, id: tc.id, name: tc.name, arguments: '' });
+          const tcIndex = currentToolCalls.length;
+          currentToolCalls.push({ index: tcIndex, id: tc.id, name: tc.name, arguments: '' });
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
-            choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: tc.id, type: 'function', function: { name: tc.name, arguments: '' } }] }, finish_reason: null }],
+            choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: tcIndex, id: tc.id, type: 'function', function: { name: tc.name, arguments: '' } }] }, finish_reason: null }],
           })}\n\n`);
         } else if (evt.type === 'toolcall_delta') {
           const ct = currentToolCalls[currentToolCalls.length - 1];
@@ -264,8 +315,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         })}\n\ndata: [DONE]\n\n`);
       }
-      const streamPreview = fullContent.slice(0, 100);
-      logRequest({ event: 'res', id: chatId, stream: true, ms: Date.now() - t0, preview: streamPreview });
+      logRequest({ event: 'res', id: chatId, stream: true, ms: Date.now() - t0, preview: streamContent.slice(0, 100) });
       res.end();
     } else {
       let fullContent = '';
@@ -361,16 +411,29 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     model, messages: rawMessages, system: systemRaw,
     max_tokens = 32000, stream = false,
     tools: toolsRaw, tool_choice,
+    thinking: thinkingParam,
   }: {
     model: string; messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; tool_use?: { name: string }; tool_result?: { tool_use_id: string; content: unknown } }> }>;
     system?: string | Array<{ type: string; text: string }>;
     max_tokens?: number; stream?: boolean;
     tools?: Array<Record<string, unknown>>; tool_choice?: string | { type: string; name?: string };
+    thinking?: { type: string; budget_tokens?: number };
   } = req.body;
 
   // Detect Claude Code client via User-Agent (opencode parity)
   const ua = (req.headers['user-agent'] as string) || '';
   const isClaudeCode = /claude/i.test(ua);
+  // Client wants separate thinking blocks if:
+  // 1. body contains thinking: { type: "enabled" }
+  // 2. anthropic-beta header contains interleaved-thinking
+  // We emit a synthetic (fake) signature_delta so that Claude Code SDK accepts
+  // the thinking block for display. The signature is never verified by any real
+  // Anthropic server since we are the gateway terminus.
+  const anthropicBeta = (req.headers['anthropic-beta'] as string) || '';
+  const wantsThinking = thinkingParam?.type === 'enabled' || anthropicBeta.includes('interleaved-thinking');
+  // Fake base64 signature — just needs to be a non-empty base64 string.
+  // Real Anthropic signatures are ~300-char base64; we use a plausible-length dummy.
+  const fakeSignature = 'ZmFrZV9zaWduYXR1cmVfZm9yX3dlYl9tb2RlbF9nYXRld2F5X3YxAAAAAAAAAAA=';
 
   // Auto-inject synthetic tool_result for interrupted tool calls (opencode parity)
   // Claude Code sometimes sends assistant tool_calls without corresponding tool results
@@ -383,7 +446,12 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       const toolUses = msg.content.filter((c: Record<string, unknown>) => c.type === 'tool_use');
       if (toolUses.length > 0) {
         const next = rawMessages[i + 1];
-        if (!next || next.role !== 'user' || (typeof next.content === 'string' && !next.content.includes('tool_result'))) {
+        const nextHasToolResult = next?.role === 'user' && (
+          Array.isArray(next.content)
+            ? (next.content as Array<Record<string, unknown>>).some(c => c.type === 'tool_result')
+            : typeof next.content === 'string' && next.content.includes('tool_result')
+        );
+        if (!nextHasToolResult) {
           messages.push({
             role: 'user',
             content: toolUses.map((tc: Record<string, unknown>) =>
@@ -440,7 +508,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       tools: (toolsRaw || []).map((t: Record<string, unknown>) => ({type: 'function' as const, function: {name: t.name as string || '', description: (t.description as string) || '', parameters: (t.input_schema as Record<string, unknown>) || (t.parameters as Record<string, unknown>) || {}}})),
       tool_choice: anthropicToolChoice,
       systemPrompt,
-      sessionId: `req_${getLastUserKey(messages as Array<{ role: string; content: unknown }>)}`,
+      sessionId: `conv_${getConversationKey(messages as Array<{ role: string; content: unknown }>, systemPrompt)}`,
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;
@@ -459,41 +527,77 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       // ping
       res.write(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
 
-      let blockIndex = -1, textBlockOpen = false, streamDone = false, streamText = '';
+      let blockIndex = -1, textBlockOpen = false, thinkingBlockOpen = false, streamDone = false, streamText = '';
+
+      // Helper: close an open thinking block, emitting signature_delta before stop.
+      // Anthropic SDK requires signature_delta to accept the thinking block.
+      // Since we are the terminus (no real Anthropic server), a fake signature works.
+      const closeThinkingBlock = () => {
+        if (!thinkingBlockOpen) return;
+        res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'signature_delta', signature: fakeSignature } })}\n\n`);
+        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
+        thinkingBlockOpen = false;
+      };
+
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
+        debugLog('upstream', { id: msgId, evtType: evt.type, deltaLen: evt.delta?.length ?? 0, deltaPreview: evt.delta?.slice(0, 80) });
         if (evt.type === 'thinking_delta' && evt.delta) {
-          // Emit thinking as regular text (Anthropic has no separate thinking block)
-          streamText += evt.delta;
-          if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
-          res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
+          if (wantsThinking) {
+            // Emit as proper interleaved thinking block
+            if (!thinkingBlockOpen) {
+              if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
+              blockIndex++;
+              thinkingBlockOpen = true;
+              const gw1 = { type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '', signature: '' } };
+              debugLog('gateway', { id: msgId, event: 'content_block_start', blockType: 'thinking', index: blockIndex });
+              res.write(`event: content_block_start\ndata: ${JSON.stringify(gw1)}\n\n`);
+            }
+            debugLog('gateway', { id: msgId, event: 'content_block_delta', blockType: 'thinking_delta', index: blockIndex, len: evt.delta.length });
+            res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'thinking_delta', thinking: evt.delta } })}\n\n`);
+          } else {
+            debugLog('gateway', { id: msgId, event: 'DROP_thinking_delta', len: evt.delta.length, preview: evt.delta.slice(0, 60) });
+          }
+          // wantsThinking=false: drop thinking_delta silently (don't leak reasoning into text)
         } else if (evt.type === 'text_delta' && evt.delta) {
-          if (!textBlockOpen) { blockIndex++; res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`); textBlockOpen = true; }
+          closeThinkingBlock();
+          if (!textBlockOpen) {
+            blockIndex++;
+            debugLog('gateway', { id: msgId, event: 'content_block_start', blockType: 'text', index: blockIndex });
+            res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } })}\n\n`);
+            textBlockOpen = true;
+          }
           streamText += evt.delta;
+          debugLog('gateway', { id: msgId, event: 'content_block_delta', blockType: 'text_delta', index: blockIndex, len: evt.delta.length, preview: evt.delta.slice(0, 60) });
           res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: evt.delta } })}\n\n`);
-        } else if (evt.type === 'toolcall_start' && evt.toolCall) {
+        } else if (evt.type === 'toolcall_end' && evt.toolCall) {
+          closeThinkingBlock();
           if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
           blockIndex++;
           const tc = evt.toolCall;
+          debugLog('gateway', { id: msgId, event: 'content_block_start', blockType: 'tool_use', index: blockIndex, name: tc.name });
           res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: tc.id, name: tc.name, input: {} } })}\n\n`);
           res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: JSON.stringify(tc.arguments) } })}\n\n`);
           res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`);
         } else if (evt.type === 'done') {
           streamDone = true;
+          closeThinkingBlock();
           if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); textBlockOpen = false; }
-          const stopReason = (evt as Record<string, unknown>).stopReason as string || 'stop';
+          const stopReason = ((evt as Record<string, unknown>).stopReason as string) || ((evt as Record<string, unknown>).reason as string) || 'stop';
           const anthropicStop = stopReason === 'toolUse' ? 'tool_use' : 'end_turn';
+          debugLog('gateway', { id: msgId, event: 'message_delta', stop_reason: anthropicStop });
           res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: anthropicStop, stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
           res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
         }
       }
       if (!streamDone) {
+        closeThinkingBlock();
         if (textBlockOpen) { res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIndex })}\n\n`); }
         res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } })}\n\n`);
         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
       }
       logRequest({ event: "res", id: msgId, stream: true, ms: Date.now() - t0, preview: streamText.slice(0, 200) });
-      res.end();;
+      res.end();
     } else {
       let fullContent = '', fullThinking = '', finishReason = 'stop';
       const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
@@ -514,13 +618,11 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
         }
       }
 
-      // Merge thinking into content if no explicit text (Anthropic has no thinking block)
-      if (!fullContent && fullThinking) fullContent = fullThinking;
-      else if (fullThinking && fullContent.length < 50) fullContent = fullThinking + '\n\n' + fullContent;
+      // When client does not request thinking blocks, drop thinking content entirely
 
       const anthropicStop = finishReason === 'toolUse' ? 'tool_use' : 'end_turn';
       const content: Array<Record<string, unknown>> = [];
-      if (fullThinking) content.push({ type: 'thinking', thinking: fullThinking.slice(0, max_tokens) });
+      if (wantsThinking && fullThinking) content.push({ type: 'thinking', thinking: fullThinking.slice(0, max_tokens), signature: msgId });
       if (fullContent) content.push({ type: 'text', text: fullContent.slice(0, max_tokens) });
       for (const tc of toolCalls) content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
       if (content.length === 0) content.push({ type: 'text', text: '' });
@@ -536,6 +638,23 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     console.error('Anthropic API error:', error);
     res.status(500).json({ type: 'error', error: { type: 'api_error', message: error instanceof Error ? error.message : 'Unknown error' } });
   }
+});
+
+// ── Anthropic count_tokens (stub) ───────────────────
+
+app.post('/v1/messages/count_tokens', (req: Request, res: Response) => {
+  // Rough estimate: ~4 chars per token across all message content
+  const body = req.body as { messages?: Array<{ content: unknown }> };
+  let chars = 0;
+  for (const m of body.messages || []) {
+    if (typeof m.content === 'string') chars += m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const p of m.content as Array<{ type: string; text?: string }>) {
+        if (p.type === 'text' && p.text) chars += p.text.length;
+      }
+    }
+  }
+  res.json({ input_tokens: Math.max(1, Math.ceil(chars / 4)) });
 });
 
 // ── Start server ─────────────────────────────────────

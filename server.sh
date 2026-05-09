@@ -70,7 +70,9 @@ cmd_status() {
     echo "  地址: http://$HOST:$PORT"
     echo ""
     echo "可用模型:"
-    curl -sf "http://$HOST:$PORT/v1/models" 2>/dev/null \
+    API_KEY_VAL=$(python3 -c "import json; d=json.load(open('$SCRIPT_DIR/config/config.json')); print(d.get('api_key',''))" 2>/dev/null || echo "")
+    curl -sf "http://$HOST:$PORT/v1/models" \
+      ${API_KEY_VAL:+-H "Authorization: Bearer $API_KEY_VAL"} 2>/dev/null \
       | python3 -c "
 import json, sys
 d = json.load(sys.stdin)

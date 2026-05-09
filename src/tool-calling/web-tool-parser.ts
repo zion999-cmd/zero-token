@@ -46,7 +46,27 @@ export function extractToolCall(text: string): ParsedToolCall | null {
     return parseToolJson(xml[1]);
   }
 
-  // 4. ReAct format: Action: tool_name\nAction Input: arg1="val1"
+  // 4. "Tool call: X\nArguments: {json}" — some models (e.g. DS when given long history) output this
+  const tcTextMatch = /Tool\s+call:\s*([A-Za-z_][A-Za-z0-9_]*)\s*\n+\s*Arguments?:\s*(\{)/i.exec(text);
+  if (tcTextMatch) {
+    const jsonStart = text.indexOf('{', tcTextMatch.index + tcTextMatch[0].length - 1);
+    if (jsonStart !== -1) {
+      let depth = 1, j = jsonStart + 1;
+      while (j < text.length && depth > 0) {
+        if (text[j] === '{') depth++;
+        else if (text[j] === '}') { depth--; if (depth === 0) { j++; break; } }
+        else if (text[j] === '"') { j++; while (j < text.length && text[j] !== '"') { if (text[j] === '\\') j++; j++; } }
+        j++;
+      }
+      if (depth === 0) {
+        try {
+          return { tool: tcTextMatch[1], parameters: JSON.parse(text.slice(jsonStart, j)) };
+        } catch { /* fall through */ }
+      }
+    }
+  }
+
+  // 4b. ReAct format: Action: tool_name\nAction Input: arg1="val1"
   const reactMatch = text.match(/Action:\s*(\S+)\s*\n?\s*Action Input:\s*(.+?)(?:\n|$)/i);
   if (reactMatch) {
     const name = reactMatch[1];

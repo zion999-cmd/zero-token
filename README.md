@@ -2,9 +2,9 @@
 
 免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI / Anthropic 兼容的 API**。
 
-> **状态：** 7 个供应商可用。OpenAI API 稳定。Anthropic API 基础可用——Claude Code 能连接并返回正确内容，但多轮对话中偶有上下文错位（Web Chat 模型与官方 API 的 thinking/reasoning 分离机制不同）。
+> **状态：** 7 个供应商可用。OpenAI API 稳定。Anthropic API（`/v1/messages`）**已稳定支持 Claude Code**——工具调用、思考块、多轮对话均可正常工作。DeepSeek 作为后端经过大量测试，是目前最推荐的 Claude Code 后端。
 > 
-> `express.json({limit:'50mb'})` 是必须的——Claude Code 的请求体可达 120KB+。
+> `express.json({limit:'50mb'})` 是必须的——Claude Code 的请求体可达 160KB+。
 
 ## 支持的供应商
 
@@ -249,11 +249,12 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 
 Claude Code、OpenClaw 等工具使用的 Anthropic 兼容接口。
 
-- 支持 `thinking` content block（匹配 DeepSeek 官方 API 格式）
+- 支持 `thinking` content block（带 fake `signature_delta`，与 Claude SDK 兼容）
 - 支持 `tool_choice`（`auto`/`any`/`none`/`tool`）
 - 支持 Anthropic `input_schema` 工具格式（自动转换为 OpenAI `parameters`）
 - 支持 `system` 参数（字符串或 ContentBlock 数组）
-- 已知限制：Web Chat 模型的 thinking/reasoning 与官方 API 不同——官方模型输出分离的 `thinking` + `text` 块，Web Chat 输出混在一起。多轮对话中模型偶有上下文错位。
+- **完整工具调用循环**：`tool_use` → `tool_result` → 最终回答，全部正确透传
+- **DeepSeek 专用**：会话分桶（`_a`/`_b`/`_c`）独立隔离，防止跨对话上下文污染
 
 ```bash
 # 非流式
@@ -333,27 +334,44 @@ print(response.choices[0].message.content)
 ## 架构
 
 ```
-用户请求 (OpenAI-compatible API)
-    │
-    ├─ /v1/models         → 模型列表 + 授权状态
-    ├─ /v1/chat/completions → wrapWithToolCalling 中间件
-    │   │
-    │   ├─ 工具注入 (per-provider prompt strategy)
-    │   ├─ 流式处理 (SSE → OpenAI chunks)
-    │   └─ 工具调用解析 (extractToolCall)
-    │
-    └─ 供应商适配层
-        │
-        ├─ DeepSeek → 纯 HTTP + PoW (WebAssembly)
-        ├─ Claude   → 浏览器内 fetch (绕过 Cloudflare)
-        ├─ Kimi/GLM/Qwen/Doubao → 浏览器 CDP attach
-        └─ Grok     → DOM 交互 (绕过 anti-bot)
+Claude Code / OpenAI SDK
+        ↓ POST /v1/messages  (Anthropic API)
+        ↓ POST /v1/chat/completions  (OpenAI API)
+   src/index.ts  (Express 网关，Anthropic/OpenAI 格式转换，会话 key 推导)
+        ↓ wrapWithToolCalling()  [web-stream-middleware.ts]
+        │   ├─ 完整历史序列化 → 单条 user 消息发给 Web Chat
+        │   ├─ tool_use 块 → <tool_call name="X">{json}</tool_call>
+        │   ├─ tool_result 块 → <tool_result tool_use_id="...">...</tool_result>
+        │   └─ [INSTRUCTION] 追加在最后（防止长 system prompt 稀释工具指令）
+        ↓ createXxxWebStreamFn()  [streams/xxx-web-stream.ts]
+        │   ├─ DeepSeek → 纯 HTTP + PoW (WebAssembly)
+        │   ├─ Claude   → 浏览器内 fetch (绕过 Cloudflare)
+        │   ├─ Kimi/GLM/Qwen/Doubao → 浏览器 CDP attach
+        │   └─ Grok     → DOM 交互 (绕过 anti-bot)
+        ↓ 工具调用解析（流式 inline + done 后 fallback）
+            支持格式：
+            1. <tool_call name="X">{json}</tool_call>  (XML)
+            2. ToolName(kwarg="val", ...)              (Python kwargs, 平衡括号解析)
+            3. ```tool_json\n{...}\n```                (fenced JSON)
+            4. Tool call: X\nArguments: {json}         (文字描述)
+            5. ReAct: Action: X\nAction Input: {json}
 
 浏览器 (Chrome Debug, port 9222)
     └─ Playwright CDP 附加模式，复用已登录页面
 
 auth-profiles.json → 网关自动加载 cookie/token
 ```
+
+### DeepSeek 会话系统
+
+- `sessionMap`: `sessionKey → DS chat_session_id`
+- `parentMessageMap`: `sessionKey → DS 最后一条消息 id`（保证流式上下文连续性）
+- **Key 格式**: `conv_${hash(firstUserMsg)}_${bucket}`
+  - bucket `a`：≤2 条消息（初始化/短对话）
+  - bucket `b`：3-6 条消息
+  - bucket `c`：7+ 条消息
+- 每个 bucket 是**独立的 DS 会话**，不跨 bucket 复用（防止 `/init` 等短对话污染后续长对话的 DS 记忆）
+- 完整历史通过 prompt 注入，DS 会话仅用于保持 HTTP 连接上下文
 
 ## 项目结构
 
