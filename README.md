@@ -2,7 +2,7 @@
 
 免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI / Anthropic 兼容的 API**。
 
-> **状态：** 7 个供应商可用。OpenAI API 稳定。Anthropic API（`/v1/messages`）**已稳定支持 Claude Code**——工具调用、思考块、多轮对话均可正常工作。DeepSeek 作为后端经过大量测试，是目前最推荐的 Claude Code 后端。
+> **状态：** 7 个供应商可用。OpenAI API 稳定。Anthropic API（`/v1/messages`）**已稳定支持 Claude Code**——工具调用、思考块、多轮对话、多步文件写入均可正常工作。DeepSeek 作为后端经过大量测试，是目前最推荐的 Claude Code 后端。
 > 
 > `express.json({limit:'50mb'})` 是必须的——Claude Code 的请求体可达 160KB+。
 
@@ -254,6 +254,7 @@ Claude Code、OpenClaw 等工具使用的 Anthropic 兼容接口。
 - 支持 Anthropic `input_schema` 工具格式（自动转换为 OpenAI `parameters`）
 - 支持 `system` 参数（字符串或 ContentBlock 数组）
 - **完整工具调用循环**：`tool_use` → `tool_result` → 最终回答，全部正确透传
+- **多工具调用支持**：DS 单次响应可输出多个工具调用（Read + mkdir + Write×N），全部按序转发给 CCC 执行，文件真实写入磁盘
 - **DeepSeek 专用**：会话分桶（`_a`/`_b`/`_c`）独立隔离，防止跨对话上下文污染
 
 ```bash
@@ -342,9 +343,13 @@ Claude Code / OpenAI SDK
         │   ├─ 完整历史序列化 → 单条 user 消息发给 Web Chat
         │   ├─ tool_use 块 → <tool_call name="X">{json}</tool_call>
         │   ├─ tool_result 块 → <tool_result tool_use_id="...">...</tool_result>
-        │   └─ [INSTRUCTION] 追加在最后（防止长 system prompt 稀释工具指令）
+        │   ├─ [INSTRUCTION] 追加在最后（防止长 system prompt 稀释工具指令）
+        │   ├─ endsWithToolResult 只检查最后一条消息（防止历史中的旧 tool_result 误触发）
+        │   └─ 所有上游 toolcall 事件全量透传（不截断多工具调用序列）
         ↓ createXxxWebStreamFn()  [streams/xxx-web-stream.ts]
         │   ├─ DeepSeek → 纯 HTTP + PoW (WebAssembly)
+        │   │   ├─ INTERNAL_TOOLS (web_search) 在 emitDelta 层过滤，不暴露给 CCC
+        │   │   └─ 支持 </ToolName> 关闭标签（DS 有时省略 </tool_call>）
         │   ├─ Claude   → 浏览器内 fetch (绕过 Cloudflare)
         │   ├─ Kimi/GLM/Qwen/Doubao → 浏览器 CDP attach
         │   └─ Grok     → DOM 交互 (绕过 anti-bot)
@@ -398,6 +403,32 @@ my-zero-token/
 # Provider 通过 ../../../extensions/ 导入，需在项目父目录创建符号链接
 ln -sf $PWD/extensions "$(dirname $PWD)/extensions"
 ```
+
+## 关键技术细节
+
+### 多工具调用透传
+
+DS 在一次响应中可能输出多个工具调用（例如 `Read` + `Bash(mkdir)` + `Write(file1)` + `Write(file2)`）。
+中间件会将所有 `toolcall_start/delta/end` 事件全量转发给 gateway，gateway 再逐一封装成 Anthropic `content_block`（`tool_use`）发给 CCC。
+CCC 会依次执行每个工具调用，并将结果以 `tool_result` 返回。
+
+> **曾踩过的坑**：中间件曾在第一个 `toolcall_end` 后设置 `toolCallEmitted=true`，导致后续工具调用事件被 `else if (!toolCallEmitted)` 静默丢弃。结果 CCC 只执行了第一个工具，文件从未被写入磁盘，DS 却输出了假的完成总结。
+
+### endsWithToolResult 检测
+
+当对话历史的**最后一条消息**是 `tool_result` 时，说明 DS 刚执行完一个工具调用，需要决策下一步。
+中间件只检查 `recentMessages[recentMessages.length - 1]`，不扫描全部历史——否则，用户发了新任务后，历史中的旧 `tool_result` 会被误识别，导致 DS 被强制跳到"写总结"阶段而跳过实际任务执行。
+
+### DS 内部工具过滤
+
+DS 有自己的 `web_search` 内部工具调用。如果把它转发给 CCC，CCC 会收到一个无法执行的 `tool_use`，造成协议错误。
+`INTERNAL_TOOLS = new Set(["web_search"])` 在 `emitDelta` 入口处过滤，确保这类事件不进入事件流。
+
+### XML 工具调用解析
+
+DS 以 `<tool_call name="Write">{...}</tool_call>` 格式输出工具调用。
+解析时工具名取自 `name=` 属性（不是 JSON body 里的 `"tool"` 字段），args JSON 是标签内容。
+此外 DS 有时用 `</Write>` 代替 `</tool_call>` 作为关闭标签，流解析器同样支持。
 
 ## 要求
 
