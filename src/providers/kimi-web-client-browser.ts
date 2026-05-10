@@ -184,6 +184,12 @@ export class KimiWebClientBrowser {
       );
     }
 
+    // Build full cookie string from browser context to pass in Node.js fetch
+    const cookieHeader = cookies
+      .filter((c) => c.domain.includes("kimi.com") || c.domain.includes("moonshot.cn"))
+      .map((c) => `${c.name}=${c.value}`)
+      .join("; ");
+
     const scenario = params.model.includes("search")
       ? "SCENARIO_SEARCH"
       : params.model.includes("research")
@@ -222,6 +228,7 @@ export class KimiWebClientBrowser {
         "X-Language": "zh-CN",
         "X-Msh-Platform": "web",
         Authorization: `Bearer ${authToken}`,
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
       },
       body: frameBuf,
       signal: params.signal,
