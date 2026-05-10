@@ -399,6 +399,35 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
                 ? "toolcall"
                 : "text";
           emitDelta(mode, tagBuffer);
+          tagBuffer = "";
+        }
+
+        // Finalize any in-progress tool call: GLM often omits the closing </tool_call>
+        // tag, leaving currentMode === "tool_call" when the stream ends.
+        // Emit toolcall_end now so the middleware sees a complete tool call event.
+        if (currentMode === "tool_call") {
+          const index = indexMap.get(`tool_${currentToolIndex}`);
+          if (index !== undefined) {
+            const part = contentParts[index] as ToolCall;
+            const argStr = accumulatedToolCalls[currentToolIndex]?.arguments || "{}";
+            let cleanedArg = argStr.trim();
+            if (cleanedArg.startsWith("```json")) cleanedArg = cleanedArg.substring(7);
+            else if (cleanedArg.startsWith("```")) cleanedArg = cleanedArg.substring(3);
+            if (cleanedArg.endsWith("```")) cleanedArg = cleanedArg.substring(0, cleanedArg.length - 3);
+            cleanedArg = cleanedArg.trim();
+            try {
+              part.arguments = JSON.parse(cleanedArg);
+            } catch {
+              part.arguments = { raw: argStr };
+            }
+            stream.push({
+              type: "toolcall_end",
+              contentIndex: index,
+              toolCall: part,
+              partial: createPartial(),
+            });
+          }
+          currentMode = "text";
         }
 
         console.log(
