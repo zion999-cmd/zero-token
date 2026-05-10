@@ -12,8 +12,6 @@ import {
 } from "../providers/kimi-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
 
-const sessionMap = new Map<string, string>();
-
 export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
   let options: KimiWebClientOptions;
   try {
@@ -31,22 +29,18 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
       try {
         await client.init();
 
-        const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
-        let sessionId = sessionMap.get(sessionKey);
-
+        // Middleware (wrapWithToolCalling) always sends a single user message containing
+        // the fully-formatted conversation history. Extract it directly — no session reuse.
         const messages = context.messages || [];
-
-        // Kimi web uses DOM simulation — only send the last user message.
-        // System prompts, tools, and full history would overwhelm the input.
+        const lastUserMsg = [...messages].reverse().find((m) => (m as { role: string }).role === "user");
         let prompt = "";
-        const lastUserMessage = [...messages].toReversed().find((m) => m.role === "user");
-        if (lastUserMessage) {
-          if (typeof lastUserMessage.content === "string") {
-            prompt = lastUserMessage.content;
-          } else if (Array.isArray(lastUserMessage.content)) {
-            prompt = (lastUserMessage.content as TextContent[])
-              .filter((part) => part.type === "text")
-              .map((part) => part.text)
+        if (lastUserMsg) {
+          if (typeof lastUserMsg.content === "string") {
+            prompt = lastUserMsg.content;
+          } else if (Array.isArray(lastUserMsg.content)) {
+            prompt = (lastUserMsg.content as Array<{ type: string; text?: string }>)
+              .filter((p) => p.type === "text")
+              .map((p) => p.text || "")
               .join("");
           }
         }
@@ -56,12 +50,11 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
           throw new Error("No message found to send to KimiWeb API");
         }
 
-        console.log(`[KimiWebStream] Starting run for session: ${sessionKey}`);
-        console.log(`[KimiWebStream] Conversation ID: ${sessionId || "new"}`);
         console.log(`[KimiWebStream] Prompt length: ${prompt.length}`);
+        console.log(`[KimiWebStream] Prompt preview: ${prompt.slice(0, 200).replace(/\n/g, " ")}`);
 
+        // Always start a fresh Kimi conversation (conversationId omitted).
         const responseStream = await client.chatCompletions({
-          conversationId: sessionId,
           message: prompt,
           model: model.id,
           signal: streamOptions?.signal,
@@ -325,11 +318,6 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
           try {
             const data = JSON.parse(dataStr);
 
-            // Extract conversation ID
-            if (data.sessionId) {
-              sessionMap.set(sessionKey, data.sessionId);
-            }
-
             // Extract content delta - Qwen v2 uses choices[0].delta.content
             const delta =
               data.choices?.[0]?.delta?.content ?? data.text ?? data.content ?? data.delta;
@@ -369,6 +357,24 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
                 ? "toolcall"
                 : "text";
           emitDelta(mode, tagBuffer);
+          tagBuffer = "";
+        }
+
+        // Finalize any in-progress tool call: Kimi may omit the closing </tool_call> tag.
+        if (currentMode === "tool_call") {
+          const index = indexMap.get(`tool_${currentToolIndex}`);
+          if (index !== undefined) {
+            const part = contentParts[index] as ToolCall;
+            const argStr = accumulatedToolCalls[currentToolIndex]?.arguments || "{}";
+            let cleanedArg = argStr.trim();
+            if (cleanedArg.startsWith("```json")) cleanedArg = cleanedArg.substring(7);
+            else if (cleanedArg.startsWith("```")) cleanedArg = cleanedArg.substring(3);
+            if (cleanedArg.endsWith("```")) cleanedArg = cleanedArg.substring(0, cleanedArg.length - 3);
+            cleanedArg = cleanedArg.trim();
+            try { part.arguments = JSON.parse(cleanedArg); } catch { part.arguments = { raw: argStr }; }
+            stream.push({ type: "toolcall_end", contentIndex: index, toolCall: part, partial: createPartial() });
+          }
+          currentMode = "text";
         }
 
         console.log(

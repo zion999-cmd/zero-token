@@ -106,11 +106,13 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     const lastMsg = messages[messages.length - 1];
     void lastMsg; // used below for logging only
 
+    // GLM/Kimi web chat uses page.evaluate (collects full response before returning).
+    // Cap context and system prompt to avoid 120s timeout on large CCC prompts.
+    const isSlowProvider = api === "glm-web" || api === "glm-intl-web" || api === "kimi-web";
+
     // Build conversation from recent messages (respecting 1M context window)
     // Web models benefit from having context, not just the last message
-    // GLM uses page.evaluate (collects full response before returning) — cap at 40K
-    // to avoid 120s timeout on large CCC prompts.
-    const MAX_CONTEXT_CHARS = api === "glm-web" || api === "glm-intl-web" ? 40_000 : 800_000;
+    const MAX_CONTEXT_CHARS = isSlowProvider ? 40_000 : 800_000;
     const recentMessages = [...messages].slice(-50); // at most 50 messages
     // Collect lines from newest → oldest (to respect size limit), then reverse to chronological order
     const contextLines: string[] = [];
@@ -259,11 +261,8 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     debugLog('middleware', { layer: 'system-prompt', rawSystemLen: rawSystem.length, rawSystemTail: rawSystem.slice(-800) });
 
     const noCoT = "\nIMPORTANT: If you need to reason before answering, wrap ALL reasoning inside <think>...</think> tags. Your visible reply must start IMMEDIATELY after </think> with the final answer only — no preamble, no narration, no meta-commentary.";
-    // GLM web chat uses page.evaluate (collects full response before returning).
-    // CCC's system prompt alone can be 60KB+, causing page.evaluate to time out.
-    // Truncate rawSystem to the first 1000 chars for GLM — enough to convey the role,
-    // the tool format is re-injected via toolSection below so nothing is lost.
-    const isSlowProvider = api === "glm-web" || api === "glm-intl-web";
+    // CCC's system prompt alone can be 60KB+; truncate to 1000 chars for slow providers
+    // (GLM/Kimi) so total prompt stays under their timeout budget.
     const effectiveSystem = isSlowProvider ? rawSystem.slice(0, 1000) : rawSystem;
     const systemSection = effectiveSystem
       ? `[System]: ${effectiveSystem}${noCoT}\n\n`
