@@ -172,7 +172,7 @@ export class KimiWebClientBrowser {
     model: string;
     signal?: AbortSignal;
   }): Promise<ReadableStream<Uint8Array>> {
-    const { browser, page } = await this.ensureBrowser();
+    const { browser } = await this.ensureBrowser();
 
     const cookies = await browser.cookies([this.baseUrl]);
     const kimiAuthCookie = cookies.find((c) => c.name === "kimi-auth")?.value;
@@ -184,124 +184,134 @@ export class KimiWebClientBrowser {
       );
     }
 
-    const result = await page.evaluate(
-      async ({
-        baseUrl,
-        message,
-        kimiAuthToken,
+    const scenario = params.model.includes("search")
+      ? "SCENARIO_SEARCH"
+      : params.model.includes("research")
+        ? "SCENARIO_RESEARCH"
+        : params.model.includes("k1")
+          ? "SCENARIO_K1"
+          : "SCENARIO_K2";
+
+    // Build ConnectRPC framed request body (5-byte header + JSON)
+    const req = {
+      scenario,
+      message: {
+        role: "user" as const,
+        blocks: [{ message_id: "", text: { content: params.message } }],
         scenario,
-      }: {
-        baseUrl: string;
-        message: string;
-        kimiAuthToken: string;
-        scenario: string;
-      }) => {
-        const req = {
-          scenario,
-          message: {
-            role: "user" as const,
-            blocks: [{ message_id: "", text: { content: message } }],
-            scenario,
-          },
-          options: { thinking: false },
-        };
-        const enc = new TextEncoder().encode(JSON.stringify(req));
-        const buf = new ArrayBuffer(5 + enc.byteLength);
-        const dv = new DataView(buf);
-        dv.setUint8(0, 0x00);
-        dv.setUint32(1, enc.byteLength, false);
-        new Uint8Array(buf, 5).set(enc);
-
-        const res = await fetch(`${baseUrl}/apiv2/kimi.gateway.chat.v1.ChatService/Chat`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/connect+json",
-            "Connect-Protocol-Version": "1",
-            Accept: "*/*",
-            Origin: baseUrl,
-            Referer: `${baseUrl}/`,
-            "X-Language": "zh-CN",
-            "X-Msh-Platform": "web",
-            Authorization: `Bearer ${kimiAuthToken}`,
-          },
-          body: buf,
-        });
-
-        if (!res.ok) {
-          const text = await res.text();
-          return { ok: false as const, error: text.slice(0, 400) };
-        }
-        const arr = await res.arrayBuffer();
-        const u8 = new Uint8Array(arr);
-        const texts: string[] = [];
-        let o = 0;
-        while (o + 5 <= u8.length) {
-          const len = new DataView(u8.buffer, u8.byteOffset + o + 1, 4).getUint32(0, false);
-          if (o + 5 + len > u8.length) {
-            break;
-          }
-          const chunk = u8.slice(o + 5, o + 5 + len);
-          try {
-            const obj = JSON.parse(new TextDecoder().decode(chunk));
-            if (obj.error) {
-              return {
-                ok: false as const,
-                error:
-                  obj.error.message || obj.error.code || JSON.stringify(obj.error).slice(0, 200),
-              };
-            }
-            // Collect text: only from "append" or "set" ops on assistant response blocks.
-            // "append" = incremental streaming chunk, "set" = full replacement.
-            // Skip other ops (like "init" which may echo back the user prompt).
-            const op = obj.op || "";
-            if (obj.block?.text?.content && (op === "append" || op === "set")) {
-              texts.push(obj.block.text.content);
-            } else if (obj.text?.content && (op === "append" || op === "set")) {
-              texts.push(obj.text.content);
-            }
-            // If no op field at all but there's a "message" with role=assistant, take it
-            if (!op && obj.message?.role === "assistant" && obj.message?.blocks) {
-              for (const blk of obj.message.blocks) {
-                if (blk.text?.content) {
-                  texts.push(blk.text.content);
-                }
-              }
-            }
-            if (obj.done) {
-              break;
-            }
-          } catch {
-            // ignore parse errors for non-JSON chunks
-          }
-          o += 5 + len;
-        }
-        return { ok: true as const, text: texts.join("") };
       },
-      {
-        baseUrl: this.baseUrl,
-        message: params.message,
-        kimiAuthToken: authToken,
-        scenario: params.model.includes("search")
-          ? "SCENARIO_SEARCH"
-          : params.model.includes("research")
-            ? "SCENARIO_RESEARCH"
-            : params.model.includes("k1")
-              ? "SCENARIO_K1"
-              : "SCENARIO_K2",
-      },
-    );
+      options: { thinking: false },
+    };
+    const enc = new TextEncoder().encode(JSON.stringify(req));
+    const frameBuf = new Uint8Array(5 + enc.byteLength);
+    const dv = new DataView(frameBuf.buffer);
+    dv.setUint8(0, 0x00);
+    dv.setUint32(1, enc.byteLength, false);
+    frameBuf.set(enc, 5);
 
-    if (!result.ok) {
-      throw new Error(`Kimi API 错误: ${result.error}`);
+    // Make the request directly from Node.js (not page.evaluate) so we get real
+    // streaming without any Playwright timeout constraints.
+    const res = await fetch(`${this.baseUrl}/apiv2/kimi.gateway.chat.v1.ChatService/Chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/connect+json",
+        "Connect-Protocol-Version": "1",
+        Accept: "*/*",
+        Origin: this.baseUrl,
+        Referer: `${this.baseUrl}/`,
+        "X-Language": "zh-CN",
+        "X-Msh-Platform": "web",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: frameBuf,
+      signal: params.signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Kimi API 错误 ${res.status}: ${text.slice(0, 400)}`);
     }
 
-    const escaped = JSON.stringify(result.text);
-    const sse = `data: {"text":${escaped}}\n\ndata: [DONE]\n\n`;
     const encoder = new TextEncoder();
-    return new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(sse));
-        controller.close();
+    const responseBody = res.body!;
+
+    // Parse ConnectRPC frames incrementally and emit SSE-style data chunks.
+    return new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const reader = responseBody.getReader();
+        let leftover = new Uint8Array(0);
+        const decoder = new TextDecoder();
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // Append new bytes to leftover
+            const combined = new Uint8Array(leftover.length + value.length);
+            combined.set(leftover);
+            combined.set(value, leftover.length);
+            leftover = combined;
+
+            // Parse as many complete frames as possible
+            let offset = 0;
+            while (offset + 5 <= leftover.length) {
+              const frameLen = new DataView(
+                leftover.buffer,
+                leftover.byteOffset + offset + 1,
+                4,
+              ).getUint32(0, false);
+              if (offset + 5 + frameLen > leftover.length) break;
+
+              const frameBytes = leftover.slice(offset + 5, offset + 5 + frameLen);
+              offset += 5 + frameLen;
+
+              try {
+                const obj = JSON.parse(decoder.decode(frameBytes));
+                if (obj.error) {
+                  const errMsg =
+                    obj.error.message ||
+                    obj.error.code ||
+                    JSON.stringify(obj.error).slice(0, 200);
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify({ error: errMsg })}\n\n`),
+                  );
+                  break;
+                }
+
+                const op: string = obj.op || "";
+                let text: string | undefined;
+
+                if (obj.block?.text?.content && (op === "append" || op === "set")) {
+                  text = obj.block.text.content as string;
+                } else if (obj.text?.content && (op === "append" || op === "set")) {
+                  text = obj.text.content as string;
+                } else if (!op && obj.message?.role === "assistant" && obj.message?.blocks) {
+                  text = (obj.message.blocks as Array<{ text?: { content?: string } }>)
+                    .map((b) => b.text?.content || "")
+                    .join("");
+                }
+
+                if (text) {
+                  controller.enqueue(
+                    encoder.encode(`data: ${JSON.stringify({ text })}\n\n`),
+                  );
+                }
+
+                if (obj.done) break;
+              } catch {
+                // ignore malformed JSON frames
+              }
+            }
+
+            leftover = leftover.slice(offset);
+          }
+        } catch (err) {
+          console.error("[KimiWebClient] Stream read error:", err);
+        } finally {
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        }
       },
     });
   }
