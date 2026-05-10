@@ -305,6 +305,38 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
           checkTags();
         };
 
+        // Kimi sometimes falls back to its native tool-call format instead of the
+        // XML <tool_call name="..."> format we instruct in the prompt.
+        // Convert it to the XML format so the existing pushDelta parser can handle it.
+        // Format: <|tool_calls_section_begin|>
+        //           <|tool_call_begin|> functions.ToolName:idx <|tool_call_argument_begin|> {json} <|tool_call_end|>
+        //         <|tool_calls_section_end|>
+        const convertKimiNativeFormat = (text: string): string => {
+          if (!text.includes("<|tool_calls_section_begin|>")) return text;
+
+          const sectionStart = text.indexOf("<|tool_calls_section_begin|>");
+          const before = text.slice(0, sectionStart);
+          const rest = text.slice(sectionStart + "<|tool_calls_section_begin|>".length);
+
+          const sectionEndIdx = rest.indexOf("<|tool_calls_section_end|>");
+          const section = sectionEndIdx !== -1 ? rest.slice(0, sectionEndIdx) : rest;
+          const after = sectionEndIdx !== -1
+            ? rest.slice(sectionEndIdx + "<|tool_calls_section_end|>".length)
+            : "";
+
+          const toolCallRegex =
+            /<\|tool_call_begin\|>\s*(?:functions\.)?(\w+)(?::\d+)?\s*<\|tool_call_argument_begin\|>([\s\S]*?)<\|tool_call_end\|>/g;
+          let converted = "";
+          let match: RegExpExecArray | null;
+          while ((match = toolCallRegex.exec(section)) !== null) {
+            const name = match[1]!;
+            const args = match[2]!.trim();
+            converted += `<tool_call name="${name}">${args}</tool_call>`;
+          }
+
+          return before + converted + after;
+        };
+
         const processLine = (line: string) => {
           if (!line || !line.startsWith("data:")) {
             return;
@@ -319,9 +351,10 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
             const data = JSON.parse(dataStr);
 
             // Extract content delta - Qwen v2 uses choices[0].delta.content
-            const delta =
+            let delta: string | undefined =
               data.choices?.[0]?.delta?.content ?? data.text ?? data.content ?? data.delta;
             if (typeof delta === "string" && delta) {
+              delta = convertKimiNativeFormat(delta);
               pushDelta(delta);
             }
           } catch {
