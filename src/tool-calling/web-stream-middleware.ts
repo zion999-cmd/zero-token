@@ -108,7 +108,9 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
 
     // Build conversation from recent messages (respecting 1M context window)
     // Web models benefit from having context, not just the last message
-    const MAX_CONTEXT_CHARS = 800_000; // leave room for tools + overhead
+    // GLM uses page.evaluate (collects full response before returning) — cap at 40K
+    // to avoid 120s timeout on large CCC prompts.
+    const MAX_CONTEXT_CHARS = api === "glm-web" || api === "glm-intl-web" ? 40_000 : 800_000;
     const recentMessages = [...messages].slice(-50); // at most 50 messages
     // Collect lines from newest → oldest (to respect size limit), then reverse to chronological order
     const contextLines: string[] = [];
