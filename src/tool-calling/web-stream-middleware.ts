@@ -241,13 +241,20 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     }
 
     // Build the final instruction appended AFTER the conversation history.
-    // Placing it here (not before the history) keeps it as the last thing DS reads
+    // Placing it here (not before the history) keeps it as the last thing the model reads
     // before generating a response — preventing it from "forgetting" the tool format
     // or entering suggestion mode (predicting the next user message).
+    // CN models need Chinese instructions — English instructions are often ignored.
+    const isCnModel = api === "kimi-web" || api === "glm-web" || api === "glm-intl-web"
+      || api === "qwen-cn-web" || api === "deepseek-web" || api === "xiaomimo-web";
     const continuationHint = endsWithToolResult
-      ? `\n\n[INSTRUCTION]: A tool has just executed and the result is above. If the overall task is NOT yet complete, output the NEXT tool call needed. If ALL steps are done, write a concise text reply summarizing what was accomplished. Do NOT repeat a tool call that was just executed.`
+      ? (isCnModel
+        ? `\n\n[指令]: 工具已执行，结果见上。如任务未完成，只输出下一个工具调用XML，禁止任何解释文字。如已全部完成，用简洁文字总结成果。禁止重复刚执行过的工具。`
+        : `\n\n[INSTRUCTION]: A tool has just executed and the result is above. If the overall task is NOT yet complete, output the NEXT tool call needed. If ALL steps are done, write a concise text reply summarizing what was accomplished. Do NOT repeat a tool call that was just executed.`)
       : injectTools
-        ? `\n\n[INSTRUCTION]: You are the AI assistant replying to the latest User message above. If a tool call is needed, output ONLY the tool call XML (e.g. <tool_call name="Bash">{"command":"..."}</tool_call>). Do NOT predict or write what the user might say next.`
+        ? (isCnModel
+          ? `\n\n[指令]: 如果需要调用工具，立即只输出工具调用XML，不得有任何解释或描述文字。格式：<tool_call name="工具名">{"参数":"值"}</tool_call>。如需推理请放在<think>...</think>内，</think>后只输出工具调用XML。不需要工具则直接回答。`
+          : `\n\n[INSTRUCTION]: You are the AI assistant replying to the latest User message above. If a tool call is needed, output ONLY the tool call XML (e.g. <tool_call name="Bash">{"command":"..."}</tool_call>). Do NOT predict or write what the user might say next.`)
         : `\n\n[INSTRUCTION]: You are the AI assistant. Reply to the latest User message above.`;
 
     const userMessage = `${historyText}${continuationHint}`;
@@ -260,7 +267,9 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // Log full rawSystem tail so we can inspect what CCC sends.
     debugLog('middleware', { layer: 'system-prompt', rawSystemLen: rawSystem.length, rawSystemTail: rawSystem.slice(-800) });
 
-    const noCoT = "\nIMPORTANT: If you need to reason before answering, wrap ALL reasoning inside <think>...</think> tags. Your visible reply must start IMMEDIATELY after </think> with the final answer only — no preamble, no narration, no meta-commentary.";
+    const noCoT = isCnModel
+      ? "\n重要：如需推理，将所有推理过程放在<think>...</think>标签内。</think>之后只输出最终答案（工具调用XML或文字回复），禁止任何旁白、解释或元评论。"
+      : "\nIMPORTANT: If you need to reason before answering, wrap ALL reasoning inside <think>...</think> tags. Your visible reply must start IMMEDIATELY after </think> with the final answer only — no preamble, no narration, no meta-commentary.";
     // CCC's system prompt alone can be 60KB+; truncate to 1000 chars for slow providers
     // (GLM/Kimi) so total prompt stays under their timeout budget.
     const effectiveSystem = isSlowProvider ? rawSystem.slice(0, 1000) : rawSystem;
