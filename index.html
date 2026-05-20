@@ -214,6 +214,98 @@
   .send-btn:disabled { background: var(--border); color: var(--text3); cursor: not-allowed; }
   .input-hint { font-size: 11px; color: var(--text3); margin-top: 8px; text-align: center; }
 
+  /* ── Mode Tabs ───────────────────────────── */
+  .mode-tabs {
+    display: flex; gap: 4px; padding: 4px; background: var(--surface2);
+    border-radius: var(--radius); margin-right: 12px;
+  }
+  .mode-tab {
+    padding: 6px 14px; border: none; background: transparent; color: var(--text3);
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-family: inherit;
+    transition: all .15s; white-space: nowrap;
+  }
+  .mode-tab:hover { color: var(--text); }
+  .mode-tab.active { background: var(--accent); color: #fff; }
+
+  /* ── Chat Room Setup ────────────────────── */
+  .chatroom-setup {
+    padding: 24px; max-width: 640px; margin: 0 auto;
+  }
+  .chatroom-setup h2 { font-size: 18px; margin-bottom: 16px; }
+  .chatroom-setup .field-row {
+    display: flex; gap: 8px; margin-bottom: 8px; align-items: center;
+  }
+  .chatroom-setup input, .chatroom-setup textarea, .chatroom-setup select {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px;
+    font-family: inherit; outline: none;
+  }
+  .chatroom-setup input:focus, .chatroom-setup textarea:focus, .chatroom-setup select:focus {
+    border-color: var(--accent);
+  }
+  .chatroom-setup input { flex: 1; }
+  .chatroom-setup textarea { width: 100%; min-height: 60px; resize: vertical; }
+  .chatroom-setup select { min-width: 160px; }
+  .participant-card {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 12px;
+  }
+  .participant-card .pc-avatar {
+    width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 600;
+  }
+  .participant-card .pc-info { flex: 1; min-width: 0; }
+  .participant-card .pc-name { font-size: 14px; font-weight: 600; color: var(--text); }
+  .participant-card .pc-persona { font-size: 12px; color: var(--text2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .participant-card .pc-model { font-size: 11px; color: var(--text3); }
+  .participant-card .pc-remove {
+    background: none; border: none; color: var(--text3); cursor: pointer; font-size: 16px;
+    padding: 4px 8px; border-radius: 4px;
+  }
+  .participant-card .pc-remove:hover { color: var(--red); }
+
+  .btn-primary {
+    background: var(--accent); color: #fff; border: none;
+    padding: 10px 20px; border-radius: var(--radius); font-size: 14px;
+    cursor: pointer; font-family: inherit; font-weight: 500;
+  }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-secondary {
+    background: var(--surface2); color: var(--text2); border: 1px solid var(--border);
+    padding: 8px 16px; border-radius: var(--radius-sm); font-size: 13px;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn-secondary:hover { background: var(--border); color: var(--text); }
+
+  /* ── Chat Room Messages ─────────────────── */
+  .croom-msg {
+    display: flex; gap: 12px; max-width: 85%; align-self: flex-start;
+    margin-bottom: 4px;
+  }
+  .croom-msg .croom-avatar {
+    width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+  }
+  .croom-msg .croom-bubble {
+    background: var(--surface2); border: 1px solid var(--border);
+    padding: 10px 14px; border-radius: var(--radius); line-height: 1.6;
+    font-size: 14px; white-space: pre-wrap; word-break: break-word;
+  }
+  .croom-msg .croom-speaker { font-size: 11px; color: var(--accent); margin-bottom: 4px; font-weight: 600; }
+  .croom-msg .croom-time { font-size: 11px; color: var(--text3); margin-top: 4px; }
+  .croom-msg.host { align-self: flex-end; }
+  .croom-msg.host .croom-bubble { background: var(--user-bg); border-color: var(--user-bg); }
+
+  .croom-controls {
+    display: flex; gap: 8px; align-items: center; justify-content: center;
+    padding: 8px 0; margin-top: 8px;
+  }
+  .croom-status {
+    font-size: 12px; color: var(--text3); text-align: center; padding: 4px;
+  }
+
   /* ── Mobile ────────────────────────────── */
   @media (max-width: 768px) {
     .sidebar { display: none; }
@@ -250,11 +342,34 @@
       <div class="model-info" id="current-model-info"></div>
     </div>
     <div class="actions">
-      <button class="btn-icon" id="tools-btn" title="工具调用" onclick="toggleTools()" style="font-size:12px;width:auto;padding:0 12px;">🧰 工具</button>
+      <div class="mode-tabs" id="mode-tabs">
+        <button class="mode-tab active" data-mode="chat" onclick="switchMode('chat')">💬 聊天</button>
+        <button class="mode-tab" data-mode="tool" onclick="switchMode('tool')">🔧 工具</button>
+        <button class="mode-tab" data-mode="chatroom" onclick="switchMode('chatroom')">🎭 聊天室</button>
+      </div>
       <button class="btn-icon" title="清空对话" onclick="clearChat()">↺</button>
       <button class="btn-icon" title="切换模型" onclick="document.getElementById('model-list').scrollIntoView()">⇄</button>
     </div>
   </header>
+
+  <!-- Chat Room Setup Panel -->
+  <div class="chatroom-setup" id="chatroom-setup" style="display:none;">
+    <h2>🎭 聊天室设置</h2>
+    <p style="color:var(--text2);font-size:13px;margin-bottom:16px;">为每个参与者定义名称、人设和使用的模型，然后输入开场白开始对话。</p>
+    <div id="participant-list"></div>
+    <div style="margin-bottom:16px;">
+      <button class="btn-secondary" onclick="addParticipant()">+ 添加参与者</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <textarea id="croom-topic" rows="1" placeholder="输入开场白 / 话题..." style="flex:1;" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';"></textarea>
+      <button class="btn-primary" id="croom-start" onclick="startChatRoom()" style="height:46px;">▶ 开始</button>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <input type="number" id="croom-rounds" value="10" min="1" max="50" style="width:80px;" title="最大轮数">
+      <span style="font-size:12px;color:var(--text3);line-height:34px;">最大自动轮转轮数</span>
+      <button class="btn-secondary" style="margin-left:auto;" onclick="showManageCroomSessions()">📋 会话管理器</button>
+    </div>
+  </div>
 
   <div class="messages" id="messages">
     <div class="welcome" id="welcome">
@@ -601,6 +716,7 @@ async function callLLM(messages, onDelta) {
 }
 
 async function sendMessage() {
+  if (currentMode === 'chatroom') return; // chat room has its own controls
   const content = $input.value.trim();
   if (!content || !currentModel || isStreaming) return;
 
@@ -678,6 +794,435 @@ $input.addEventListener('input', () => {
   $input.style.height = 'auto';
   $input.style.height = Math.min($input.scrollHeight, 200) + 'px';
 });
+
+// ── Mode Switching ─────────────────────────
+let currentMode = 'chat';
+
+function switchMode(mode) {
+  currentMode = mode;
+  // Update tab styles
+  document.querySelectorAll('.mode-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.mode === mode);
+  });
+  // Show/hide panels
+  const $setup = document.getElementById('chatroom-setup');
+  const $inputArea = document.querySelector('.input-area');
+  if (mode === 'chatroom') {
+    if ($setup) $setup.style.display = 'block';
+    if ($inputArea) $inputArea.style.display = 'none';
+    $send.disabled = true;
+    $welcome.style.display = 'none';
+    // Auto-init first 2 participants if empty
+    if (chatRoomParticipants.length === 0) {
+      addParticipant();
+      addParticipant();
+    }
+    renderParticipants();
+  } else {
+    if ($setup) $setup.style.display = 'none';
+    if ($inputArea) $inputArea.style.display = '';
+    $send.disabled = !currentModel;
+    $inputHint.textContent = currentModel ? 'Enter 发送 · Shift+Enter 换行' : '请先选择模型';
+    stopChatRoom();
+  }
+  if (mode === 'tool') {
+    if (!toolsEnabled) toggleTools();
+  }
+}
+
+// ── Chat Room State ────────────────────────
+let chatRoomParticipants = [];
+let chatRoomHistory = [];
+let chatRoomRunning = false;
+let chatRoomAbort = null;
+let participantColors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#00bcd4'];
+
+function defaultPersona() {
+  return '你正在一个聊天室中参与群聊。请用自然、有趣的方式发言，不要长篇大论，像真人聊天一样简洁。';
+}
+
+function addParticipant(data) {
+  const defaults = { name: '', persona: defaultPersona(), model: currentModel || (models[0]?.id || '') };
+  chatRoomParticipants.push(data || defaults);
+  renderParticipants();
+}
+
+function removeParticipant(idx) {
+  chatRoomParticipants.splice(idx, 1);
+  renderParticipants();
+}
+
+function renderParticipants() {
+  const list = document.getElementById('participant-list');
+  if (!list) return;
+  if (chatRoomParticipants.length === 0) {
+    list.innerHTML = '<p style="color:var(--text3);font-size:13px;">还没有参与者，点击下方按钮添加。</p>';
+    return;
+  }
+  list.innerHTML = chatRoomParticipants.map((p, i) => `
+    <div class="participant-card">
+      <div class="pc-avatar" style="background:${participantColors[i % participantColors.length]};color:#fff;">${(p.name || '?')[0]}</div>
+      <div class="pc-info">
+        <div class="pc-name">${esc(p.name || '(未命名)')}</div>
+        <div class="pc-persona">${esc(p.persona || '')}</div>
+        <div class="pc-model">${esc(p.model || '未选择模型')}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+        <button class="pc-remove" onclick="removeParticipant(${i})" title="移除">✕</button>
+        <button class="btn-secondary" style="font-size:11px;padding:2px 8px;" onclick="editParticipant(${i})">编辑</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function editParticipant(idx) {
+  const p = chatRoomParticipants[idx];
+  const name = prompt('角色名称:', p.name) || p.name;
+  const persona = prompt('人设/系统提示词:', p.persona) || p.persona;
+  const model = prompt('模型 (provider/model):', p.model) || p.model;
+  chatRoomParticipants[idx] = { name, persona, model };
+  renderParticipants();
+  saveCroomConfig();
+}
+
+// ── Persistence ─────────────────────────────
+function saveCroomConfig() {
+  localStorage.setItem('myzt_croom_participants', JSON.stringify(chatRoomParticipants));
+  localStorage.setItem('myzt_croom_history', JSON.stringify(chatRoomHistory));
+}
+function loadCroomConfig() {
+  try {
+    const p = localStorage.getItem('myzt_croom_participants');
+    if (p) chatRoomParticipants = JSON.parse(p);
+    const h = localStorage.getItem('myzt_croom_history');
+    if (h) chatRoomHistory = JSON.parse(h);
+  } catch {}
+}
+loadCroomConfig();
+
+// ── Chat Room LLM Call ─────────────────────
+// ── Chat Room LLM Call ─────────────────────
+// Each participant maintains a persistent upstream session.
+// First call primes the persona; subsequent calls only send new context.
+
+const croomSessionInit = {}; // keyed by participant name
+
+async function callChatRoomLLM(participant, historyLines, lastSpokeIdx) {
+	const headers = authHeaders({ 'Content-Type': 'application/json' });
+	const cookie = getCookie();
+	if (cookie) headers['x-cookie'] = cookie;
+
+		const isFirstCall = !croomSessionInit[participant.name];
+		let prompt;
+
+		if (isFirstCall) {
+			// First message: set up persona + show conversation so far
+			const contextText = historyLines.map(h => {
+				return `${h.speaker}: ${h.content}`;
+			}).join('\n');
+
+			prompt = `你是${participant.name}。${participant.persona}\n\n当前聊天记录：\n${contextText}\n\n现在请用${participant.name}的身份发言。`;
+
+			croomSessionInit[participant.name] = true;
+		} else {
+			// Subsequent calls: only new messages since this participant last spoke.
+			// Skip their own last message (at lastSpokeIdx), show only what others said after.
+			const newLines = historyLines.slice(lastSpokeIdx + 1);
+			prompt = newLines.map(h => {
+				return `${h.speaker}: ${h.content}`;
+			}).join('\n');
+			// No new messages since last spoke — skip this turn
+			if (!prompt.trim()) return '';
+		}
+	const body = {
+		model: participant.model,
+		messages: [{ role: 'user', content: prompt }],
+		stream: true,
+		session_id: participant._sessionId,
+		mode: 'chatroom'
+	};
+
+	const resp = await fetch(API + '/v1/chat/completions', {
+		method: 'POST', headers,
+		body: JSON.stringify(body),
+		signal: chatRoomAbort ? chatRoomAbort.signal : undefined,
+	});
+
+	if (!resp.ok) {
+		const err = await resp.json().catch(() => ({ error: { message: 'HTTP ' + resp.status } }));
+		throw new Error(err.error?.message || 'Request failed');
+	}
+
+	const reader = resp.body.getReader();
+	const dec = new TextDecoder();
+	let buf = '', fullText = '';
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		buf += dec.decode(value, { stream: true });
+		const lines = buf.split('\n');
+		buf = lines.pop() || '';
+		for (const line of lines) {
+			if (!line.startsWith('data: ')) continue;
+			const d = line.slice(6);
+			if (d === '[DONE]') continue;
+			try {
+				const p = JSON.parse(d);
+				const content = p.choices?.[0]?.delta?.content;
+				if (content) fullText += content;
+				updateCroomStreaming(fullText);
+			} catch {}
+		}
+	}
+	return fullText.trim();
+}
+function updateCroomStreaming(text) {
+  if (croomStreamingEl) {
+    const bubble = croomStreamingEl.querySelector('.croom-bubble');
+    if (bubble) bubble.textContent = text || '...';
+    scrollBottom();
+  }
+}
+
+function addCroomMsg(speaker, model, content, isHost) {
+  const row = document.createElement('div');
+  row.className = 'croom-msg' + (isHost ? ' host' : '');
+  const colorIdx = chatRoomParticipants.findIndex(p => p.name === speaker);
+  const color = colorIdx >= 0 ? participantColors[colorIdx % participantColors.length] : '#888';
+  row.innerHTML = `
+    <div class="croom-avatar" style="background:${color};color:#fff;font-size:14px;">${esc(speaker[0] || '?')}</div>
+    <div class="msg-body" style="min-width:0;">
+      <div class="croom-speaker">${esc(speaker)} <span style="font-weight:400;color:var(--text3);font-size:10px;">${esc(model.split('/').pop() || '')}</span></div>
+      <div class="croom-bubble">${esc(content)}</div>
+      <div class="croom-time">${timeStr()}</div>
+    </div>
+  `;
+  $messages.appendChild(row);
+  scrollBottom();
+  return row;
+}
+
+function addCroomStreamingPlaceholder(speaker, model) {
+  const row = document.createElement('div');
+  row.className = 'croom-msg';
+  const colorIdx = chatRoomParticipants.findIndex(p => p.name === speaker);
+  const color = colorIdx >= 0 ? participantColors[colorIdx % participantColors.length] : '#888';
+  row.innerHTML = `
+    <div class="croom-avatar" style="background:${color};color:#fff;font-size:14px;">${esc(speaker[0] || '?')}</div>
+    <div class="msg-body" style="min-width:0;">
+      <div class="croom-speaker">${esc(speaker)} <span style="font-weight:400;color:var(--text3);font-size:10px;">${esc(model.split('/').pop() || '')}</span></div>
+      <div class="croom-bubble"><div class="loading"><span></span><span></span><span></span></div></div>
+      <div class="croom-time">${timeStr()}</div>
+    </div>
+  `;
+  $messages.appendChild(row);
+  scrollBottom();
+  return row;
+}
+
+async function startChatRoom() {
+  const topic = document.getElementById('croom-topic').value.trim();
+  if (!topic) { alert('请输入开场白/话题'); return; }
+  if (chatRoomParticipants.length < 2) { alert('请至少添加2个参与者'); return; }
+  // Validate all participants have models
+  const missing = chatRoomParticipants.filter(p => !p.model);
+  if (missing.length > 0) { alert('请为每个参与者选择模型: ' + missing.map(p => p.name || '(未命名)').join(', ')); return; }
+
+  chatRoomRunning = true;
+  chatRoomAbort = new AbortController();
+  document.getElementById('croom-start').disabled = true;
+  $welcome.style.display = 'none';
+
+  // Reset session tracking — each participant gets a fresh upstream chat session
+  for (const k of Object.keys(croomSessionInit)) delete croomSessionInit[k];
+  // Generate persistent session IDs so upstream LLMs reuse the same session across rounds
+  chatRoomParticipants.forEach(p => {
+    p._sessionId = 'croom_' + p.name.replace(/[^a-zA-Z0-9一-鿿]/g, '_') + '_' + Date.now().toString(36);
+  });
+
+  // Track when each participant last spoke (index in chatRoomHistory)
+  const lastSpokeIdx = {};
+
+  // Add topic message
+  addCroomMsg('主持人', '', topic, true);
+  chatRoomHistory = [{ speaker: '主持人', content: topic }];
+  saveCroomConfig();
+
+  const maxRounds = parseInt(document.getElementById('croom-rounds').value) || 10;
+  let round = 0;
+  let currentSpeakerIdx = 0;
+  let stallCount = 0;
+
+  try {
+    while (round < maxRounds && chatRoomRunning && stallCount < chatRoomParticipants.length) {
+      const participant = chatRoomParticipants[currentSpeakerIdx];
+      const status = document.getElementById('croom-status');
+      if (status) status.textContent = `第 ${round + 1}/${maxRounds} 轮 · ${participant.name} 正在输入...`;
+
+      // Show loading
+      croomStreamingEl = addCroomStreamingPlaceholder(participant.name, participant.model);
+
+      try {
+        // Pass the history index AFTER which new messages appear for this participant
+        const prevIdx = lastSpokeIdx[participant.name] ?? 0;
+        const response = await callChatRoomLLM(participant, chatRoomHistory, prevIdx);
+        // Remove streaming placeholder
+        if (croomStreamingEl) croomStreamingEl.remove();
+        croomStreamingEl = null;
+
+        if (response) {
+          addCroomMsg(participant.name, participant.model, response, false);
+          chatRoomHistory.push({ speaker: participant.name, model: participant.model, content: response });
+          lastSpokeIdx[participant.name] = chatRoomHistory.length - 1;
+          saveCroomConfig();
+          stallCount = 0;
+        } else {
+          stallCount++;
+        }
+      } catch (e) {
+        if (croomStreamingEl) croomStreamingEl.remove();
+        croomStreamingEl = null;
+        if (e.name === 'AbortError') break;
+        addCroomMsg(participant.name, participant.model, `[错误] ${e.message}`, false);
+      }
+
+      currentSpeakerIdx = (currentSpeakerIdx + 1) % chatRoomParticipants.length;
+      round++;
+
+      // Delay between messages for natural feel
+      if (chatRoomRunning && round < maxRounds) {
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+  } finally {
+    chatRoomRunning = false;
+    chatRoomAbort = null;
+    document.getElementById('croom-start').disabled = false;
+    const status = document.getElementById('croom-status');
+    if (status) status.textContent = chatRoomHistory.length > 1 ? `已结束 · 共 ${chatRoomHistory.length} 条消息` : '';
+  }
+}
+
+function stopChatRoom() {
+  chatRoomRunning = false;
+  if (chatRoomAbort) { chatRoomAbort.abort(); chatRoomAbort = null; }
+}
+
+// ── Session Manager ─────────────────────────
+function showManageCroomSessions() {
+  let html = '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;" onclick="this.remove()">';
+  html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;" onclick="event.stopPropagation()">';
+  html += '<h3 style="margin-bottom:12px;">📋 聊天室会话管理</h3>';
+  html += '<p style="color:var(--text2);font-size:12px;margin-bottom:12px;">聊天室使用无状态模式调用上游LLM，所有历史记录由本地浏览器维护。关闭页面后会话丢失（除非保存）。</p>';
+
+  // Current session info
+  html += `<p style="font-size:13px;margin-bottom:8px;">当前会话: ${chatRoomHistory.length} 条消息, ${chatRoomParticipants.length} 个参与者</p>`;
+
+  // Export/Import buttons
+  html += '<div style="display:flex;gap:8px;margin-bottom:12px;">';
+  html += '<button class="btn-secondary" onclick="exportCroomSession()">📥 导出会话</button>';
+  html += '<button class="btn-secondary" onclick="importCroomSession()">📤 导入会话</button>';
+  html += '</div>';
+
+  // Session list (from localStorage)
+  const sessions = getStoredCroomSessions();
+  if (sessions.length > 0) {
+    html += '<h4 style="margin-bottom:8px;">已保存的会话</h4>';
+    sessions.forEach((s, i) => {
+      html += `<div class="participant-card" style="cursor:pointer;" onclick="loadCroomSession(${i});document.querySelector('[style*=\"position:fixed\"]').remove();switchMode('chatroom');">`;
+      html += `<div class="pc-info"><div class="pc-name">${esc(s.topic || '会话 ' + (i+1))}</div>`;
+      html += `<div class="pc-persona">${s.msgCount || 0} 条消息 · ${s.date || ''}</div></div>`;
+      html += `<button class="pc-remove" onclick="event.stopPropagation();deleteCroomSession(${i})">✕</button>`;
+      html += '</div>';
+    });
+  }
+
+  html += '</div></div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function exportCroomSession() {
+  const data = {
+    participants: chatRoomParticipants,
+    history: chatRoomHistory,
+    topic: chatRoomHistory[0]?.content || '',
+    date: new Date().toLocaleString('zh-CN'),
+    msgCount: chatRoomHistory.length,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `chatroom-${Date.now()}.json`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importCroomSession() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.json';
+  input.onchange = () => {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        chatRoomParticipants = data.participants || [];
+        chatRoomHistory = data.history || [];
+        renderParticipants();
+        saveCroomConfig();
+        // Replay history
+        $messages.innerHTML = '';
+        for (const h of chatRoomHistory) {
+          addCroomMsg(h.speaker, h.model || '', h.content, h.speaker === '主持人');
+        }
+      } catch (e) { alert('导入失败: ' + e.message); }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+function getStoredCroomSessions() {
+  try { return JSON.parse(localStorage.getItem('myzt_croom_sessions') || '[]'); } catch { return []; }
+}
+
+function loadCroomSession(idx) {
+  const sessions = getStoredCroomSessions();
+  if (idx >= 0 && idx < sessions.length) {
+    const s = sessions[idx];
+    chatRoomParticipants = s.participants || [];
+    chatRoomHistory = s.history || [];
+    renderParticipants();
+    saveCroomConfig();
+    // Replay history
+    $messages.innerHTML = '';
+    for (const h of chatRoomHistory) {
+      addCroomMsg(h.speaker, h.model || '', h.content, h.speaker === '主持人');
+    }
+  }
+}
+
+function deleteCroomSession(idx) {
+  const sessions = getStoredCroomSessions();
+  sessions.splice(idx, 1);
+  localStorage.setItem('myzt_croom_sessions', JSON.stringify(sessions));
+  // Refresh the modal
+  document.querySelector('[style*=\"position:fixed\"]')?.remove();
+  showManageCroomSessions();
+}
+
+function clearChat() {
+  if (currentMode === 'chatroom') {
+    chatRoomHistory = [];
+    $messages.innerHTML = '';
+    saveCroomConfig();
+    return;
+  }
+  chatHistory = [];
+  $messages.innerHTML = '';
+  $welcome.style.display = 'flex';
+}
 
 // ── Events ─────────────────────────────────
 $send.addEventListener('click', sendMessage);

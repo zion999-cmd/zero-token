@@ -103,12 +103,26 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
   return (model, context, options) => {
     // --- Input rewriting ---
     const messages = context.messages || [];
-    const lastMsg = messages[messages.length - 1];
-    void lastMsg; // used below for logging only
 
-    // GLM/Kimi web chat uses page.evaluate (collects full response before returning).
+    // Stateless mode (tool / chatroom) — skip history building
+    const ctxMode = (context as any).mode;
+    if (ctxMode === 'tool' || ctxMode === 'chatroom') {
+      const systemPrompt = (context as any).systemPrompt || '';
+      const msgList = [...messages];
+      if (systemPrompt && msgList.length > 0 && msgList[0].role === 'user') {
+        msgList[0] = { ...msgList[0], content: `${systemPrompt}\n\n${msgList[0].content}` };
+      }
+      return streamFn(model, Object.assign({}, context, {
+        messages: msgList,
+        tools: [],
+        systemPrompt: '',
+      }), options);
+    }
+
+    // GLM web chat uses page.evaluate (collects full response before returning).
     // Cap context and system prompt to avoid 120s timeout on large CCC prompts.
-    const isSlowProvider = api === "glm-web" || api === "glm-intl-web" || api === "kimi-web";
+    // kimi-web uses Node.js streaming fetch and supports 256K context — excluded from slow list.
+    const isSlowProvider = api === "glm-web" || api === "glm-intl-web";
 
     // Build conversation from recent messages (respecting 1M context window)
     // Web models benefit from having context, not just the last message

@@ -209,7 +209,7 @@ app.get('/v1/models', (_req: Request, res: Response) => {
 
 app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   // Accept OpenAI SDK params
-  const { model, messages, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop } = req.body;
+  const { model, messages, stream = false, tools, tool_choice, temperature, max_tokens, top_p, n, stop, mode, system_prompt, session_id } = req.body;
   void temperature; void top_p; void n; void stop;
   // Web models don't have strict token limits, but truncate to avoid 20MB context overflow
   // Honour max_tokens if provided, otherwise no limit
@@ -242,7 +242,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
     // Group related requests by LAST user message (Claude Code sends duplicates)
-    const context = { messages, tools: tools || [], tool_choice, sessionId: `conv_${getConversationKey(messages as Array<{ role: string; content: unknown }>)}` };
+    const context = { messages, tools: tools || [], tool_choice, sessionId: session_id || `conv_${getConversationKey(messages as Array<{ role: string; content: unknown }>)}`, mode, systemPrompt: system_prompt };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);

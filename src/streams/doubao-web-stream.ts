@@ -64,6 +64,7 @@ export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
           messages: [{ role: "user", content: prompt }],
           model: model.id,
           signal: streamOptions?.signal,
+          conversationId: sessionId || undefined,
         });
 
         if (!responseStream) {
@@ -478,8 +479,12 @@ export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
         }
         flushTextBuffer();
 
+        // Save conversationId back for next round
+        const cid = client.currentConversationId;
+        if (cid) sessionMap.set(sessionKey, cid);
+
         console.log(
-          `[DoubaoWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}`,
+          `[DoubaoWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}, convId: ${cid || 'none'}`,
         );
 
         stream.push({

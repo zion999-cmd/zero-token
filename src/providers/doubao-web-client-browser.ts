@@ -36,6 +36,7 @@ export class DoubaoWebClientBrowser {
   private page: Page | null = null;
   private running: RunningChrome | null = null;
   private conversationId: string | null = null; // 复用对话 ID
+  get currentConversationId(): string | null { return this.conversationId; }
 
   constructor(options: DoubaoWebClientOptions | string) {
     if (typeof options === "string") {
@@ -51,6 +52,14 @@ export class DoubaoWebClientBrowser {
       this.userAgent = options.userAgent || "Mozilla/5.0";
     }
 
+    // Fall back to extracting sessionid/ttwid from cookie string
+    if (!this.sessionid && this.cookie) {
+      for (const part of this.cookie.split(";")) {
+        const [k, v] = part.trim().split("=");
+        if (k?.trim() === "sessionid") this.sessionid = v?.trim();
+        if (k?.trim() === "ttwid" && !this.ttwid) this.ttwid = v?.trim();
+      }
+    }
     if (!this.sessionid) {
       throw new Error("Doubao sessionid is required");
     }
@@ -186,7 +195,12 @@ export class DoubaoWebClientBrowser {
     messages: Array<{ role: string; content: string }>;
     model?: string;
     signal?: AbortSignal;
+    conversationId?: string;
   }): Promise<ReadableStream<Uint8Array>> {
+    // Restore conversation ID from sessionMap if provided
+    if (params.conversationId && !this.conversationId) {
+      this.conversationId = params.conversationId;
+    }
     const { page } = await this.ensureBrowser();
 
     const modelId = params.model || "doubao-seed-2.0";
@@ -301,17 +315,20 @@ export class DoubaoWebClientBrowser {
     );
     console.log(`[Doubao Web Browser] Response data preview: ${responseData.data?.slice(0, 500)}`);
 
-    // 从响应中提取 conversation_id
-    if (!this.conversationId && responseData.data) {
+    // 从响应中提取 conversation_id（每次更新，API 可能返回新 ID）
+    if (responseData.data) {
       try {
-        // 查找 data 中的 conversation_id（可能在各个事件的 event_data 中）
         const lines = responseData.data.split("\n");
         for (const line of lines) {
           if (line.startsWith("data:") && line.includes("conversation_id")) {
-            const match = line.match(/"conversation_id"\s*:\s*"([^"]+)"/);
+            // conversation_id may appear as \"conversation_id\":\"12345\" inside escaped JSON
+            const match = line.match(/conversation_id[^:]*:\s*\\?"?(\d+)\\?"?/);
             if (match && match[1] && match[1] !== "0") {
+              const prevId = this.conversationId;
               this.conversationId = match[1];
-              console.log(`[Doubao Web Browser] Captured conversation_id: ${this.conversationId}`);
+              if (prevId !== this.conversationId) {
+                console.log(`[Doubao Web Browser] Updated conversation_id: ${prevId || 'none'} → ${this.conversationId}`);
+              }
               break;
             }
           }
