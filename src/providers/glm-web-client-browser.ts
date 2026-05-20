@@ -295,132 +295,79 @@ export class ZWebClientBrowser {
       ],
     };
 
-    const evalPromise = this.page.evaluate(
-      async ({ accessToken, bodyStr, deviceId, requestId, timeoutMs, sign, xExpGroups }) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          const controller = new AbortController();
-          timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Use Node.js fetch instead of page.evaluate to avoid
+    // "Execution context was destroyed" errors on page navigation.
+    const bodyStr = JSON.stringify(body);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      "App-Name": "chatglm",
+      Origin: "https://chatglm.cn",
+      "X-App-Platform": "pc",
+      "X-App-Version": "0.0.1",
+      "X-App-fr": "default",
+      "X-Device-Id": this.deviceId,
+      "X-Exp-Groups": X_EXP_GROUPS,
+      "X-Lang": "zh",
+      "X-Nonce": sign.nonce,
+      "X-Request-Id": requestId,
+      "X-Sign": sign.sign,
+      "X-Timestamp": sign.timestamp,
+    };
+    if (this.accessToken) {
+      headers["Authorization"] = `Bearer ${this.accessToken}`;
+    }
 
-          const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-            "App-Name": "chatglm",
-            Origin: "https://chatglm.cn",
-            "X-App-Platform": "pc",
-            "X-App-Version": "0.0.1",
-            "X-App-fr": "default",
-            "X-Device-Brand": "",
-            "X-Device-Id": deviceId,
-            "X-Device-Model": "",
-            "X-Exp-Groups": xExpGroups,
-            "X-Lang": "zh",
-            "X-Nonce": sign.nonce,
-            "X-Request-Id": requestId,
-            "X-Sign": sign.sign,
-            "X-Timestamp": sign.timestamp,
-          };
-          if (accessToken) {
-            headers["Authorization"] = `Bearer ${accessToken}`;
-          }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), fetchTimeoutMs);
 
-          const res = await fetch("https://chatglm.cn/chatglm/backend-api/assistant/stream", {
-            method: "POST",
-            headers,
-            credentials: "include",
-            body: bodyStr,
-            signal: controller.signal,
-          });
+    let res: Response;
+    try {
+      res = await fetch("https://chatglm.cn/chatglm/backend-api/assistant/stream", {
+        method: "POST",
+        headers,
+        body: bodyStr,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const msg = String(err);
+      if (msg.includes("aborted") || msg.includes("signal")) {
+        throw new Error(`ChatGLM API request timed out after ${fetchTimeoutMs / 1000}s`);
+      }
+      throw err;
+    }
+    clearTimeout(timeoutId);
 
-          clearTimeout(timer);
-
-          if (!res.ok) {
-            const errorText = await res.text();
-            return { ok: false, status: res.status, error: errorText.substring(0, 500) };
-          }
-
-          const reader = res.body?.getReader();
-          if (!reader) {
-            return { ok: false, status: 500, error: "No response body" };
-          }
-
-          const decoder = new TextDecoder();
-          let fullText = "";
-          let chunkCount = 0;
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              break;
-            }
-            const chunk = decoder.decode(value, { stream: true });
-            fullText += chunk;
-            chunkCount++;
-          }
-
-          return { ok: true, data: fullText, chunkCount };
-        } catch (err) {
-          if (timer) {
-            clearTimeout(timer);
-          }
-          const msg = String(err);
-          if (msg.includes("aborted") || msg.includes("signal")) {
-            return {
-              ok: false,
-              status: 408,
-              error: `ChatGLM API request timed out after ${timeoutMs}ms`,
-            };
-          }
-          return { ok: false, status: 500, error: msg };
-        }
-      },
-      {
-        accessToken: this.accessToken,
-        bodyStr: JSON.stringify(body),
-        deviceId: this.deviceId,
-        requestId,
-        timeoutMs: fetchTimeoutMs,
-        sign,
-        xExpGroups: X_EXP_GROUPS,
-      },
-    );
-
-    const externalTimeoutMs = fetchTimeoutMs + 10_000;
-    const responseData = await Promise.race([
-      evalPromise,
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                `[Z Web Browser] page.evaluate timed out after ${externalTimeoutMs / 1000}s`,
-              ),
-            ),
-          externalTimeoutMs,
-        ),
-      ),
-    ]);
-
-    if (!responseData || !responseData.ok) {
-      if (responseData?.status === 401) {
+    if (!res.ok) {
+      if (res.status === 401) {
         console.log("[Z Web Browser] Access token expired, refreshing...");
         await this.refreshAccessToken();
         throw new Error("Authentication expired. Token has been refreshed, please retry.");
       }
-      throw new Error(
-        `ChatGLM API error: ${responseData?.status || "unknown"} - ${responseData?.error || "Request failed"}`,
-      );
+      const errorText = await res.text().catch(() => "");
+      throw new Error(`ChatGLM API error: ${res.status} - ${errorText.slice(0, 300)}`);
     }
 
-    console.log(
-      `[Z Web Browser] Response: ${responseData.chunkCount} chunks, ${responseData.data?.length || 0} bytes`,
-    );
+    const reader = res.body?.getReader();
+    if (!reader) {
+      throw new Error("ChatGLM API returned empty response body");
+    }
 
     const encoder = new TextEncoder();
-    return new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(responseData.data));
-        controller.close();
+    return new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+        } catch (err) {
+          controller.error(err);
+        } finally {
+          controller.close();
+        }
       },
     });
   }

@@ -451,6 +451,7 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
         });
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
+        console.error(`[ZWebStream] Error: ${errorMessage}`);
         stream.push({
           type: "error",
           reason: "error",
