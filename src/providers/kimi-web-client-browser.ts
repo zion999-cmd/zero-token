@@ -249,6 +249,7 @@ export class KimiWebClientBrowser {
     const responseBody = res.body!;
 
     // Capture chat_id from response for session reuse
+    const self = this;
     let capturedChatId: string | undefined;
 
     // Parse ConnectRPC frames incrementally and emit SSE-style data chunks.
@@ -288,6 +289,12 @@ export class KimiWebClientBrowser {
                 if (obj.chat_id && !capturedChatId) {
                   capturedChatId = obj.chat_id as string;
                   this.conversationId = capturedChatId;
+                  console.log(`[KimiWebClient] Captured chat_id: ${capturedChatId}`);
+                }
+                // Capture chat.id for session persistence
+                if (obj.chat?.id && !capturedChatId) {
+                  capturedChatId = obj.chat.id as string;
+                  self.conversationId = capturedChatId;
                 }
                 if (obj.error) {
                   const errMsg =

@@ -963,7 +963,7 @@ loadCroomConfig();
 
 // kimi-web and glm-web do not support session persistence — each call is fresh.
 // They need full persona + full history on every turn.
-const STATELESS_PROVIDERS = ['kimi-web', 'glm-web'];
+const STATELESS_PROVIDERS = ['kimi-web'];
 function isStatelessProvider(modelId) {
   return STATELESS_PROVIDERS.some(p => (modelId || '').startsWith(p));
 }
