@@ -905,6 +905,13 @@ loadCroomConfig();
 // Each participant maintains a persistent upstream session.
 // First call primes the persona; subsequent calls only send new context.
 
+
+// kimi-web and glm-web do not support session persistence — each call is fresh.
+// They need full persona + full history on every turn.
+const STATELESS_PROVIDERS = ['kimi-web', 'glm-web'];
+function isStatelessProvider(modelId) {
+  return STATELESS_PROVIDERS.some(p => (modelId || '').startsWith(p));
+}
 const croomSessionInit = {}; // keyed by participant name
 
 async function callChatRoomLLM(participant, historyLines, lastSpokeIdx) {
@@ -912,10 +919,10 @@ async function callChatRoomLLM(participant, historyLines, lastSpokeIdx) {
 	const cookie = getCookie();
 	if (cookie) headers['x-cookie'] = cookie;
 
-		const isFirstCall = !croomSessionInit[participant.name];
+		const needsFullContext = isStatelessProvider(participant.model) || !croomSessionInit[participant.name];
 		let prompt;
 
-		if (isFirstCall) {
+		if (needsFullContext) {
 			// First message: set up persona + show conversation so far
 			const contextText = historyLines.map(h => {
 				return `${h.speaker}: ${h.content}`;
@@ -923,7 +930,9 @@ async function callChatRoomLLM(participant, historyLines, lastSpokeIdx) {
 
 			prompt = `你是${participant.name}。${participant.persona}\n\n当前聊天记录：\n${contextText}\n\n现在请用${participant.name}的身份发言。`;
 
-			croomSessionInit[participant.name] = true;
+			if (!isStatelessProvider(participant.model)) {
+				croomSessionInit[participant.name] = true;
+			}
 		} else {
 			// Subsequent calls: only new messages since this participant last spoke.
 			// Skip their own last message (at lastSpokeIdx), show only what others said after.

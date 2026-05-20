@@ -8,6 +8,8 @@ import {
 } from "@mariozechner/pi-ai";
 import { ZWebClientBrowser, type ZWebClientOptions } from "../providers/glm-web-client-browser.js";
 
+const sessionMap = new Map<string, string>();
+
 // Alias for compatibility
 export function createGlmWebStreamFn(cookieOrJson: string): StreamFn {
   return createZWebStreamFn(cookieOrJson);
@@ -54,12 +56,15 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
         console.log(`[ZWebStream] Prompt length: ${prompt.length}`);
         console.log(`[ZWebStream] Prompt preview: ${prompt.slice(0, 200).replace(/\n/g, " ")}`);
 
-        // Always start a fresh GLM conversation (conversationId omitted).
-        // The full history is already embedded in prompt by the middleware.
+        // Reuse conversation session when available
+        const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
+        const cachedCid = sessionMap.get(sessionKey);
+
         const responseStream = await client.chatCompletions({
           message: prompt,
           model: model.id,
           signal: streamOptions?.signal,
+          conversationId: cachedCid || undefined,
         });
 
         if (!responseStream) {
@@ -323,6 +328,11 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
           try {
             const data = JSON.parse(dataStr);
 
+            // Capture conversation_id for session reuse
+            if (data.conversation_id && !sessionMap.has(sessionKey)) {
+              sessionMap.set(sessionKey, data.conversation_id as string);
+            }
+
             // Extract content delta - ChatGLM format
             // ChatGLM returns parts[].content[] with text
             let delta = "";
@@ -431,7 +441,7 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
         }
 
         console.log(
-          `[ZWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}`,
+          `[ZWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}, convId: ${sessionMap.get(sessionKey) || 'none'}`,
         );
 
         stream.push({

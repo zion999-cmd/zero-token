@@ -12,6 +12,8 @@ import {
 } from "../providers/kimi-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
 
+const sessionMap = new Map<string, string>();
+
 export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
   let options: KimiWebClientOptions;
   try {
@@ -53,11 +55,15 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
         console.log(`[KimiWebStream] Prompt length: ${prompt.length}`);
         console.log(`[KimiWebStream] Prompt preview: ${prompt.slice(0, 200).replace(/\n/g, " ")}`);
 
-        // Always start a fresh Kimi conversation (conversationId omitted).
+        // Reuse conversation session when available
+        const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
+        const cachedCid = sessionMap.get(sessionKey);
+
         const responseStream = await client.chatCompletions({
           message: prompt,
           model: model.id,
           signal: streamOptions?.signal,
+          conversationId: cachedCid || undefined,
         });
 
         if (!responseStream) {
@@ -410,8 +416,12 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
           currentMode = "text";
         }
 
+        // Save conversationId for next round
+        const cid = client.currentConversationId;
+        if (cid) sessionMap.set(sessionKey, cid);
+
         console.log(
-          `[KimiWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}`,
+          `[KimiWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}, convId: ${cid || 'none'}`,
         );
 
         stream.push({

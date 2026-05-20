@@ -34,6 +34,8 @@ export class KimiWebClientBrowser {
   private browser: BrowserContext | null = null;
   private page: Page | null = null;
   private running: RunningChrome | null = null;
+  private conversationId: string | null = null;
+  get currentConversationId(): string | null { return this.conversationId; }
 
   constructor(options: KimiWebClientOptions | string) {
     if (typeof options === "string") {
@@ -199,7 +201,7 @@ export class KimiWebClientBrowser {
           : "SCENARIO_K2";
 
     // Build ConnectRPC framed request body (5-byte header + JSON)
-    const req = {
+    const req: Record<string, unknown> = {
       scenario,
       message: {
         role: "user" as const,
@@ -208,6 +210,10 @@ export class KimiWebClientBrowser {
       },
       options: { thinking: false },
     };
+    // Pass conversation/chat ID to continue an existing session
+    if (params.conversationId) {
+      req.chat_id = params.conversationId;
+    }
     const enc = new TextEncoder().encode(JSON.stringify(req));
     const frameBuf = new Uint8Array(5 + enc.byteLength);
     const dv = new DataView(frameBuf.buffer);
@@ -242,8 +248,11 @@ export class KimiWebClientBrowser {
     const encoder = new TextEncoder();
     const responseBody = res.body!;
 
+    // Capture chat_id from response for session reuse
+    let capturedChatId: string | undefined;
+
     // Parse ConnectRPC frames incrementally and emit SSE-style data chunks.
-    return new ReadableStream<Uint8Array>({
+    const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const reader = responseBody.getReader();
         let leftover = new Uint8Array(0);
@@ -275,6 +284,11 @@ export class KimiWebClientBrowser {
 
               try {
                 const obj = JSON.parse(decoder.decode(frameBytes));
+                // Capture chat_id for session persistence
+                if (obj.chat_id && !capturedChatId) {
+                  capturedChatId = obj.chat_id as string;
+                  this.conversationId = capturedChatId;
+                }
                 if (obj.error) {
                   const errMsg =
                     obj.error.message ||
@@ -321,6 +335,7 @@ export class KimiWebClientBrowser {
         }
       },
     });
+    return stream;
   }
 
   async close() {
