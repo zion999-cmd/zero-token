@@ -227,25 +227,53 @@
   .mode-tab:hover { color: var(--text); }
   .mode-tab.active { background: var(--accent); color: #fff; }
 
-  /* ── Chat Room Setup ────────────────────── */
-  .chatroom-setup {
-    padding: 24px; max-width: 640px; margin: 0 auto;
+  /* ── Chat Room 3-Column Layout ──────────── */
+  .chatroom-layout {
+    display: none; flex: 1; min-height: 0; overflow: hidden;
   }
-  .chatroom-setup h2 { font-size: 18px; margin-bottom: 16px; }
-  .chatroom-setup .field-row {
-    display: flex; gap: 8px; margin-bottom: 8px; align-items: center;
+  .croom-left {
+    width: 280px; flex-shrink: 0; background: var(--surface);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    overflow-y: auto;
   }
-  .chatroom-setup input, .chatroom-setup textarea, .chatroom-setup select {
+  .croom-left h3 { font-size: 13px; color: var(--text2); padding: 16px 16px 8px; }
+  .croom-left .participant-list { padding: 0 12px 12px; }
+  .croom-left .participant-card { margin-bottom: 8px; }
+  .croom-left .croom-left-footer { padding: 12px; border-top: 1px solid var(--border); }
+
+  .croom-center {
+    flex: 1; display: flex; flex-direction: column; min-width: 0;
+    background: var(--bg);
+  }
+  .croom-center .messages { flex: 1; overflow-y: auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .croom-center .croom-topic-bar {
+    padding: 12px 16px; background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; gap: 8px;
+  }
+  .croom-center .croom-topic-bar textarea {
+    flex: 1; background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px;
+    font-family: inherit; resize: none; min-height: 38px; outline: none;
+  }
+  .croom-center .croom-topic-bar textarea:focus { border-color: var(--accent); }
+
+  .croom-right {
+    width: 240px; flex-shrink: 0; background: var(--surface);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    padding: 16px; gap: 12px; overflow-y: auto;
+  }
+  .croom-right h3 { font-size: 13px; color: var(--text2); }
+  .croom-right label { font-size: 11px; color: var(--text3); display: block; margin-bottom: 4px; }
+  .croom-right input, .croom-right textarea {
     background: var(--surface2); color: var(--text); border: 1px solid var(--border);
     padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px;
-    font-family: inherit; outline: none;
+    font-family: inherit; outline: none; width: 100%;
   }
-  .chatroom-setup input:focus, .chatroom-setup textarea:focus, .chatroom-setup select:focus {
-    border-color: var(--accent);
+  .croom-right input:focus, .croom-right textarea:focus { border-color: var(--accent); }
+  .croom-right .croom-status {
+    font-size: 12px; color: var(--text3); text-align: center; padding: 8px;
+    background: var(--surface2); border-radius: var(--radius-sm);
   }
-  .chatroom-setup input { flex: 1; }
-  .chatroom-setup textarea { width: 100%; min-height: 60px; resize: vertical; }
-  .chatroom-setup select { min-width: 160px; }
   .participant-card {
     background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 12px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 12px;
@@ -352,22 +380,43 @@
     </div>
   </header>
 
-  <!-- Chat Room Setup Panel -->
-  <div class="chatroom-setup" id="chatroom-setup" style="display:none;">
-    <h2>🎭 聊天室设置</h2>
-    <p style="color:var(--text2);font-size:13px;margin-bottom:16px;">为每个参与者定义名称、人设和使用的模型，然后输入开场白开始对话。</p>
-    <div id="participant-list"></div>
-    <div style="margin-bottom:16px;">
-      <button class="btn-secondary" onclick="addParticipant()">+ 添加参与者</button>
+  <!-- Chat Room 3-Column Layout -->
+  <div class="chatroom-layout" id="chatroom-layout">
+    <!-- Left: Participants -->
+    <div class="croom-left">
+      <h3>🎭 参与者</h3>
+      <div class="participant-list" id="participant-list"></div>
+      <div class="croom-left-footer">
+        <button class="btn-secondary" onclick="addParticipant()" style="width:100%;">+ 添加参与者</button>
+      </div>
     </div>
-    <div style="display:flex;gap:8px;margin-bottom:12px;">
-      <textarea id="croom-topic" rows="1" placeholder="输入开场白 / 话题..." style="flex:1;" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';"></textarea>
-      <button class="btn-primary" id="croom-start" onclick="startChatRoom()" style="height:46px;">▶ 开始</button>
+
+    <!-- Center: Messages -->
+    <div class="croom-center">
+      <div class="messages" id="croom-messages"></div>
+      <div class="croom-topic-bar">
+        <textarea id="croom-topic" rows="1" placeholder="输入开场白 / 话题..."></textarea>
+        <button class="btn-primary" id="croom-start" onclick="startChatRoom()">▶ 开始</button>
+      </div>
     </div>
-    <div style="display:flex;gap:8px;">
-      <input type="number" id="croom-rounds" value="10" min="1" max="50" style="width:80px;" title="最大轮数">
-      <span style="font-size:12px;color:var(--text3);line-height:34px;">最大自动轮转轮数</span>
-      <button class="btn-secondary" style="margin-left:auto;" onclick="showManageCroomSessions()">📋 会话管理器</button>
+
+    <!-- Right: Controls -->
+    <div class="croom-right">
+      <h3>⚙️ 控制</h3>
+      <div>
+        <label>最大轮数</label>
+        <input type="number" id="croom-rounds" value="10" min="1" max="50">
+      </div>
+      <div>
+        <label>轮间延迟 (秒)</label>
+        <input type="number" id="croom-delay" value="1.5" min="0.5" max="10" step="0.5">
+      </div>
+      <button class="btn-primary" id="croom-stop" onclick="stopChatRoom()" style="display:none;width:100%;background:var(--red);">⏹ 停止</button>
+      <div class="croom-status" id="croom-status"></div>
+      <hr style="border-color:var(--border);margin:4px 0;">
+      <button class="btn-secondary" onclick="showManageCroomSessions()" style="width:100%;">📋 会话管理</button>
+      <button class="btn-secondary" onclick="exportCroomSession()" style="width:100%;">📥 导出</button>
+      <button class="btn-secondary" onclick="importCroomSession()" style="width:100%;">📤 导入</button>
     </div>
   </div>
 
@@ -632,7 +681,10 @@ function copyText(btn) {
 }
 
 function scrollBottom() {
-  requestAnimationFrame(() => { $messages.scrollTop = $messages.scrollHeight; });
+  requestAnimationFrame(() => {
+    const el = document.getElementById('croom-messages') || $messages;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
 }
 
 // ── Thinking split (client-side) ──────────
@@ -800,27 +852,30 @@ let currentMode = 'chat';
 
 function switchMode(mode) {
   currentMode = mode;
-  // Update tab styles
   document.querySelectorAll('.mode-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.mode === mode);
   });
-  // Show/hide panels
-  const $setup = document.getElementById('chatroom-setup');
+  const $layout = document.getElementById('chatroom-layout');
   const $inputArea = document.querySelector('.input-area');
+  const $msgArea = document.getElementById('messages');
+  const $croomMsgs = document.getElementById('croom-messages');
+  const $welcomeEl = document.getElementById('welcome');
+
   if (mode === 'chatroom') {
-    if ($setup) $setup.style.display = 'block';
+    if ($layout) $layout.style.display = 'flex';
     if ($inputArea) $inputArea.style.display = 'none';
+    if ($msgArea) $msgArea.style.display = 'none';
     $send.disabled = true;
-    $welcome.style.display = 'none';
-    // Auto-init first 2 participants if empty
+    if ($welcomeEl) $welcomeEl.style.display = 'none';
     if (chatRoomParticipants.length === 0) {
       addParticipant();
       addParticipant();
     }
     renderParticipants();
   } else {
-    if ($setup) $setup.style.display = 'none';
+    if ($layout) $layout.style.display = 'none';
     if ($inputArea) $inputArea.style.display = '';
+    if ($msgArea) $msgArea.style.display = '';
     $send.disabled = !currentModel;
     $inputHint.textContent = currentModel ? 'Enter 发送 · Shift+Enter 换行' : '请先选择模型';
     stopChatRoom();
@@ -995,6 +1050,7 @@ function updateCroomStreaming(text) {
 }
 
 function addCroomMsg(speaker, model, content, isHost) {
+  const container = document.getElementById('croom-messages') || $messages;
   const row = document.createElement('div');
   row.className = 'croom-msg' + (isHost ? ' host' : '');
   const colorIdx = chatRoomParticipants.findIndex(p => p.name === speaker);
@@ -1007,12 +1063,13 @@ function addCroomMsg(speaker, model, content, isHost) {
       <div class="croom-time">${timeStr()}</div>
     </div>
   `;
-  $messages.appendChild(row);
+  container.appendChild(row);
   scrollBottom();
   return row;
 }
 
 function addCroomStreamingPlaceholder(speaker, model) {
+  const container = document.getElementById('croom-messages') || $messages;
   const row = document.createElement('div');
   row.className = 'croom-msg';
   const colorIdx = chatRoomParticipants.findIndex(p => p.name === speaker);
@@ -1025,7 +1082,7 @@ function addCroomStreamingPlaceholder(speaker, model) {
       <div class="croom-time">${timeStr()}</div>
     </div>
   `;
-  $messages.appendChild(row);
+  container.appendChild(row);
   scrollBottom();
   return row;
 }
@@ -1040,7 +1097,9 @@ async function startChatRoom() {
 
   chatRoomRunning = true;
   chatRoomAbort = new AbortController();
-  document.getElementById('croom-start').disabled = true;
+  document.getElementById('croom-start').style.display = 'none';
+  const $stop = document.getElementById('croom-stop');
+  if ($stop) $stop.style.display = '';
   $welcome.style.display = 'none';
 
   // Reset session tracking — each participant gets a fresh upstream chat session
@@ -1101,13 +1160,16 @@ async function startChatRoom() {
 
       // Delay between messages for natural feel
       if (chatRoomRunning && round < maxRounds) {
-        await new Promise(r => setTimeout(r, 1500));
+        const delayMs = (parseFloat(document.getElementById('croom-delay')?.value) || 1.5) * 1000;
+        await new Promise(r => setTimeout(r, delayMs));
       }
     }
   } finally {
     chatRoomRunning = false;
     chatRoomAbort = null;
-    document.getElementById('croom-start').disabled = false;
+    document.getElementById('croom-start').style.display = '';
+    const $stop = document.getElementById('croom-stop');
+    if ($stop) $stop.style.display = 'none';
     const status = document.getElementById('croom-status');
     if (status) status.textContent = chatRoomHistory.length > 1 ? `已结束 · 共 ${chatRoomHistory.length} 条消息` : '';
   }
@@ -1224,7 +1286,8 @@ function deleteCroomSession(idx) {
 function clearChat() {
   if (currentMode === 'chatroom') {
     chatRoomHistory = [];
-    $messages.innerHTML = '';
+    const cm = document.getElementById('croom-messages');
+    if (cm) cm.innerHTML = '';
     saveCroomConfig();
     return;
   }
