@@ -65,6 +65,7 @@ export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
           model: model.id,
           signal: streamOptions?.signal,
           conversationId: sessionId || undefined,
+          rawText: true,
         });
 
         if (!responseStream) {

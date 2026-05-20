@@ -196,6 +196,7 @@ export class DoubaoWebClientBrowser {
     model?: string;
     signal?: AbortSignal;
     conversationId?: string;
+    rawText?: boolean;
   }): Promise<ReadableStream<Uint8Array>> {
     // Restore conversation ID from sessionMap if provided
     if (params.conversationId && !this.conversationId) {
@@ -204,7 +205,10 @@ export class DoubaoWebClientBrowser {
     const { page } = await this.ensureBrowser();
 
     const modelId = params.model || "doubao-seed-2.0";
-    const text = this.mergeMessagesForSamantha(params.messages);
+    // rawText: skip ChatML wrapping, send plain text directly (chat/chatroom modes)
+    const text = params.rawText
+      ? params.messages[0]?.content || ""
+      : this.mergeMessagesForSamantha(params.messages);
 
     console.log(`[Doubao Web Browser] Sending message`);
     console.log(`[Doubao Web Browser] Model: ${modelId}`);
