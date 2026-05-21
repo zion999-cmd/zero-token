@@ -983,7 +983,7 @@ async function callChatRoomLLM(participant, historyLines, lastSpokeIdx) {
 				return `${h.speaker}: ${h.content}`;
 			}).join('\n');
 
-			prompt = `你是${participant.name}。${participant.persona}\n\n当前聊天记录：\n${contextText}\n\n现在请用${participant.name}的身份发言。`;
+			prompt = `[System]: 你是${participant.name}。${participant.persona}\n\n当前聊天记录：\n${contextText}\n\n[User]: 请用${participant.name}的身份发言。`;
 
 			if (!isStatelessProvider(participant.model)) {
 				croomSessionInit[participant.name] = true;
@@ -1145,6 +1145,13 @@ async function startChatRoom() {
           lastSpokeIdx[participant.name] = chatRoomHistory.length - 1;
           saveCroomConfig();
           stallCount = 0;
+
+          // Check for stop phrase (only if response is short and contains the keyword)
+          const trimmed = response.trim();
+          if (trimmed.length < 30 && /^(结束聊天室|结束对话|聊天结束|stop\s*chat)/i.test(trimmed)) {
+            addCroomMsg('系统', '', '聊天室已结束。', false);
+            break;
+          }
         } else {
           stallCount++;
         }
