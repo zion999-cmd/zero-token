@@ -42,10 +42,10 @@ for i in $(seq 1 15); do
       "https://www.kimi.com"
       "https://chatglm.cn"
       "https://grok.com"
+      "https://www.qianwen.com/chat/"
       "https://chat.qwen.ai"
       "https://www.doubao.com/chat/"
       "https://www.perplexity.ai"
-      "https://tongyi.aliyun.com"
       "https://gemini.google.com/app"
     )
     echo "正在打开 ${#PLATFORMS[@]} 个平台..."

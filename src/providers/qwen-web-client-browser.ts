@@ -28,7 +28,8 @@ export class QwenWebClientBrowser {
   private sessionToken: string;
   private cookie: string;
   private userAgent: string;
-  private baseUrl = "https://chat.qwen.ai";
+  private baseUrl = "https://chat.qwen.ai";       // API gateway
+  private pageUrl = "https://www.qianwen.com/chat/"; // web UI
   private browser: BrowserContext | null = null;
   private page: Page | null = null;
   private running: RunningChrome | null = null;
@@ -84,7 +85,7 @@ export class QwenWebClientBrowser {
       ).contexts()[0]!;
 
       const pages = this.browser.pages();
-      let qwenPage = pages.find((p) => p.url().includes("qwen.ai"));
+      let qwenPage = pages.find((p) => p.url().includes("qianwen.com") || p.url().includes("qwen.ai"));
 
       if (qwenPage) {
         console.log(`[Qwen Web Browser] Found existing Qwen page`);
@@ -92,7 +93,7 @@ export class QwenWebClientBrowser {
       } else {
         console.log(`[Qwen Web Browser] Creating new page`);
         this.page = await this.browser.newPage();
-        await this.page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
+        await this.page.goto(this.pageUrl, { waitUntil: "domcontentloaded" });
       }
 
       console.log(`[Qwen Web Browser] Connected successfully`);
@@ -128,7 +129,7 @@ export class QwenWebClientBrowser {
       return {
         name: name.trim(),
         value: valueParts.join("=").trim(),
-        domain: ".qwen.ai",
+        domain: ".qianwen.com",
         path: "/",
       };
     });
@@ -142,231 +143,137 @@ export class QwenWebClientBrowser {
     await this.ensureBrowser();
   }
 
+  
   async chatCompletions(params: {
-    conversationId?: string;
     message: string;
     model?: string;
     signal?: AbortSignal;
   }): Promise<ReadableStream<Uint8Array>> {
-    const { page } = await this.ensureBrowser();
+    const { browser } = await this.ensureBrowser();
 
     const model = params.model || "qwen3.5-plus";
 
-    console.log(`[Qwen Web Browser] Sending message`);
-    console.log(`[Qwen Web Browser] Model: ${model}`);
-    console.log(`[Qwen Web Browser] Message: ${params.message.substring(0, 100)}...`);
+    console.log(`[Qwen Web Browser] Sending (model: ${model}, len: ${params.message.length})`);
 
-    // Step 1: Create a new chat session to get chat_id（30s 超时）
+    // Get cookies from browser context for API auth
+    const cookies = await browser.cookies([this.baseUrl, this.pageUrl]);
+    const cookieHeader = cookies
+      .map((c) => `${c.name}=${c.value}`)
+      .join("; ");
+
+    // Step 1: Create chat session via Node.js fetch
     const createChatTimeoutMs = 30_000;
-    const createChatResult = await page.evaluate(
-      async ({ baseUrl, timeoutMs }) => {
-        let timer: ReturnType<typeof setTimeout> | undefined = undefined;
-        try {
-          const url = `${baseUrl}/api/v2/chats/new`;
-          console.log(`[Browser] Creating chat: ${url}`);
+    const ctrl1 = new AbortController();
+    const t1 = setTimeout(() => ctrl1.abort(), createChatTimeoutMs);
 
-          const controller = new AbortController();
-          timer = setTimeout(() => controller.abort(), timeoutMs);
+    let createRes: Response;
+    try {
+      createRes = await fetch(`${this.baseUrl}/api/v2/chats/new`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        },
+        body: JSON.stringify({}),
+        signal: ctrl1.signal,
+      });
+    } catch (err) {
+      clearTimeout(t1);
+      throw new Error(`Failed to create Qwen chat: ${String(err)}`);
+    }
+    clearTimeout(t1);
 
-          const res = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({}),
-            signal: controller.signal,
-          });
-
-          clearTimeout(timer);
-
-          console.log(`[Browser] Create chat response status: ${res.status}`);
-          console.log(
-            `[Browser] Create chat response headers:`,
-            Object.fromEntries(res.headers.entries()),
-          );
-
-          if (!res.ok) {
-            const errorText = await res.text();
-            console.log(`[Browser] Create chat error response: ${errorText.substring(0, 500)}`);
-            return { ok: false, status: res.status, error: errorText };
-          }
-
-          const data = await res.json();
-          const chatId = data.data?.id ?? data.chat_id ?? data.id ?? data.chatId;
-          console.log(`[Browser] Chat created, chat ID:`, chatId);
-          return { ok: true, chatId, fullData: data };
-        } catch (err) {
-          if (typeof timer !== "undefined") {
-            clearTimeout(timer);
-          }
-          const msg = String(err);
-          if (msg.includes("aborted") || msg.includes("signal")) {
-            return { ok: false, status: 408, error: `Create chat timed out after ${timeoutMs}ms` };
-          }
-          console.error(`[Browser] Create chat exception:`, err);
-          return { ok: false, status: 500, error: msg };
-        }
-      },
-      { baseUrl: this.baseUrl, timeoutMs: createChatTimeoutMs },
-    );
-
-    console.log(`[Qwen Web Browser] Create chat result:`, JSON.stringify(createChatResult));
-
-    if (!createChatResult.ok || !createChatResult.chatId) {
-      console.error(`[Qwen Web Browser] Failed to create chat`);
-      console.error(`[Qwen Web Browser] Error: ${createChatResult.error}`);
-      console.error(`[Qwen Web Browser] Full result:`, JSON.stringify(createChatResult));
-      throw new Error(
-        `Failed to create Qwen chat: ${createChatResult.error || "No chat_id in response"}`,
-      );
+    if (!createRes.ok) {
+      const errText = await createRes.text().catch(() => "");
+      throw new Error(`Failed to create Qwen chat: ${createRes.status} - ${errText.slice(0, 300)}`);
     }
 
-    const chatId = createChatResult.chatId;
+    const createData = await createRes.json() as Record<string, unknown>;
+    const chatId = (createData as any).data?.id ?? (createData as any).chat_id ?? (createData as any).id;
+    if (!chatId) {
+      throw new Error("No chat_id in Qwen response");
+    }
     console.log(`[Qwen Web Browser] Chat ID: ${chatId}`);
 
-    // Step 2: Send message using the chat_id（加入 fetch 超时，默认 5 分钟，避免长时间无响应导致 run 级 timeout）
+    // Step 2: Send message via Node.js fetch
     const fetchTimeoutMs = 300_000;
     const fid = crypto.randomUUID();
-    const responseData = await page.evaluate(
-      async ({ baseUrl, chatId, model, message, fid, timeoutMs }) => {
-        let timer: ReturnType<typeof setTimeout> | undefined = undefined;
-        try {
-          const url = `${baseUrl}/api/v2/chat/completions?chat_id=${chatId}`;
-          console.log(`[Browser] Sending message: ${url} (timeout: ${timeoutMs}ms)`);
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), fetchTimeoutMs);
 
-          const controller = new AbortController();
-          timer = setTimeout(() => controller.abort(), timeoutMs);
-          const requestBody = {
-            stream: true,
-            version: "2.1",
-            incremental_output: true,
-            chat_id: chatId,
-            chat_mode: "normal",
-            model: model,
-            parent_id: null,
-            messages: [
-              {
-                fid,
-                parentId: null,
-                childrenIds: [],
-                role: "user",
-                content: message,
-                user_action: "chat",
-                files: [],
-                timestamp: Math.floor(Date.now() / 1000),
-                models: [model],
-                chat_type: "t2t",
-                feature_config: { thinking_enabled: true, output_schema: "phase" },
-              },
-            ],
-          };
-
-          console.log(`[Browser] Request body:`, JSON.stringify(requestBody, null, 2));
-
-          const res = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "text/event-stream",
-            },
-            body: JSON.stringify(requestBody),
-            signal: controller.signal,
-          });
-
-          clearTimeout(timer);
-          console.log(`[Browser] Response status: ${res.status}`);
-          console.log(`[Browser] Response headers:`, Object.fromEntries(res.headers.entries()));
-
-          if (!res.ok) {
-            const errorText = await res.text();
-            console.log(`[Browser] Error response: ${errorText.substring(0, 500)}`);
-            return { ok: false, status: res.status, error: errorText };
-          }
-
-          const reader = res.body?.getReader();
-          if (!reader) {
-            return { ok: false, status: 500, error: "No response body" };
-          }
-
-          const decoder = new TextDecoder();
-          let fullText = "";
-          let chunkCount = 0;
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              break;
-            }
-            const chunk = decoder.decode(value, { stream: true });
-            fullText += chunk;
-            chunkCount++;
-            if (chunkCount <= 3) {
-              console.log(`[Browser] Chunk ${chunkCount}: ${chunk.substring(0, 200)}`);
-            }
-          }
-
-          console.log(`[Browser] Total chunks: ${chunkCount}, Total length: ${fullText.length}`);
-          return { ok: true, data: fullText };
-        } catch (err) {
-          if (typeof timer !== "undefined") {
-            clearTimeout(timer);
-          }
-          const msg = String(err);
-          if (msg.includes("aborted") || msg.includes("signal")) {
-            return {
-              ok: false,
-              status: 408,
-              error: `Qwen API request timed out after ${timeoutMs}ms`,
-            };
-          }
-          console.error(`[Browser] Fetch error:`, err);
-          return { ok: false, status: 500, error: msg };
-        }
-      },
-      {
-        baseUrl: this.baseUrl,
-        chatId,
-        model: model,
-        message: params.message,
+    const requestBody = {
+      stream: true,
+      version: "2.1",
+      incremental_output: true,
+      chat_id: chatId,
+      chat_mode: "normal",
+      model: model,
+      parent_id: null,
+      messages: [{
         fid,
-        timeoutMs: fetchTimeoutMs,
-      },
-    );
+        parentId: null,
+        childrenIds: [],
+        role: "user",
+        content: params.message,
+        user_action: "chat",
+        files: [],
+        timestamp: Math.floor(Date.now() / 1000),
+        models: [model],
+        chat_type: "t2t",
+        feature_config: { thinking_enabled: true, output_schema: "phase" },
+      }],
+    };
 
-    if (!responseData || !responseData.ok) {
-      console.error(`[Qwen Web Browser] Request failed`);
-      console.error(`[Qwen Web Browser] Error: ${responseData?.status} - ${responseData?.error}`);
+    let msgRes: Response;
+    try {
+      msgRes = await fetch(`${this.baseUrl}/api/v2/chat/completions?chat_id=${chatId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        },
+        body: JSON.stringify(requestBody),
+        signal: ctrl2.signal,
+      });
+    } catch (err) {
+      clearTimeout(t2);
+      const msg = String(err);
+      if (msg.includes("aborted") || msg.includes("signal")) {
+        throw new Error(`Qwen API request timed out after ${fetchTimeoutMs / 1000}s`);
+      }
+      throw err;
+    }
+    clearTimeout(t2);
 
-      if (responseData?.status === 401 || responseData?.status === 403) {
-        throw new Error(
-          "Authentication failed. Please re-run onboarding to refresh your Qwen session.",
-        );
+    if (!msgRes.ok) {
+      if (msgRes.status === 401 || msgRes.status === 403) {
+        throw new Error("Authentication failed. Please re-run onboarding to refresh your Qwen session.");
       }
-      if (responseData?.status === 408) {
-        throw new Error(
-          `Qwen API request timed out. ${responseData?.error || ""} ` +
-            "Ensure chat.qwen.ai is reachable, Chrome is connected, and you are logged in.",
-        );
-      }
-      throw new Error(
-        `Qwen API error: ${responseData?.status || "unknown"} - ${responseData?.error || "Request failed"}`,
-      );
+      const errText = await msgRes.text().catch(() => "");
+      throw new Error(`Qwen API error: ${msgRes.status} - ${errText.slice(0, 300)}`);
     }
 
-    console.log(`[Qwen Web Browser] Response data length: ${responseData.data?.length || 0} bytes`);
-    console.log(
-      `[Qwen Web Browser] Response preview: ${responseData.data?.substring(0, 300) || "empty"}`,
-    );
+    // Stream the response directly
+    const reader = msgRes.body?.getReader();
+    if (!reader) throw new Error("Qwen API returned empty response body");
 
     const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(responseData.data));
-        controller.close();
+    return new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+        } catch (err) {
+          controller.error(err);
+        } finally {
+          controller.close();
+        }
       },
     });
-
-    return stream;
   }
 
   async close() {

@@ -776,6 +776,9 @@ function splitThinking(text) {
 // ── Send message ───────────────────────────
 
 async function callLLM(messages, onDelta) {
+  const t0 = Date.now();
+  const lastMsg = messages[messages.length - 1]?.content?.slice(0, 60) || '';
+  addLogEntry({ time: timeStr(), model: currentModel.split('/').pop(), preview: lastMsg, ms: 0, tokens: 0, streaming: true });
   const headers = authHeaders({ 'Content-Type': 'application/json' });
   const cookie = getCookie();
   if (cookie) headers['x-cookie'] = cookie;
@@ -828,6 +831,8 @@ async function callLLM(messages, onDelta) {
       } catch {}
     }
   }
+  const totalTokens = (fullText + fullThinking).length;
+  if (reqLog[0]) { reqLog[0].ms = Date.now() - t0; reqLog[0].tokens = totalTokens; reqLog[0].streaming = false; renderLogPanel(); }
   return { content: fullText, thinking: fullThinking, toolCalls: toolCalls.filter(Boolean) };
 }
 

@@ -85,7 +85,7 @@ const PROVIDERS: WebProvider[] = [
   {
     id: "qwen-web",
     name: "Qwen",
-    url: "https://chat.qwen.ai",
+    url: "https://www.qianwen.com/chat/",
     authCookieNames: ["cna", "athena_session", "login_session"],
     extraCookieNames: ["__ssid"],
   },
@@ -118,7 +118,7 @@ const PROVIDERS: WebProvider[] = [
   {
     id: "qwen-cn-web",
     name: "Qwen CN (阿里国内)",
-    url: "https://tongyi.aliyun.com",
+    url: "https://chat.qwen.ai",
     authCookieNames: ["tongyi_sso_ticket", "login_aliyunid_ticket"],
     extraCookieNames: ["XSRF-TOKEN", "b-user-id"],
   },
@@ -449,7 +449,7 @@ async function main() {
       .split(",")
       .map((s) => s.trim())
       .map(Number)
-      .filter((n) => n >= 1 && n <= PROVIDERS.length);
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= PROVIDERS.length);
     selectedProviders = indices.map((i) => PROVIDERS[i - 1]);
   }
 

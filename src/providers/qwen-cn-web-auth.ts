@@ -35,12 +35,12 @@ export async function loginQwenCNWeb(params: {
     browser = await chromium.connectOverCDP(wsUrl);
     const context = browser.contexts()[0];
 
-    onProgress("Opening Qwen CN (qianwen.com)...");
+    onProgress("Opening Qwen CN (chat.qwen.ai)...");
 
-    let page = context.pages().find((p) => p.url().includes("qianwen.com"));
+    let page = context.pages().find((p) => p.url().includes("qwen.ai"));
     if (!page) {
       page = await context.newPage();
-      await page.goto("https://www.qianwen.com/", { waitUntil: "domcontentloaded" });
+      await page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
     }
 
     // If already logged in, capture cookies and verify API access
@@ -92,7 +92,7 @@ export async function loginQwenCNWeb(params: {
       // Test API access to verify credentials work
       try {
         const apiTest = await page.evaluate(async () => {
-          const res = await fetch("https://chat2.qianwen.com/api/v2/chat", {
+          const res = await fetch("https://chat.qwen.ai/api/v2/chat", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -169,7 +169,7 @@ export async function loginQwenCNWeb(params: {
           // Verify API access after login
           try {
             const apiTest = await page.evaluate(async () => {
-              const res = await fetch("https://chat2.qianwen.com/api/v2/chat", {
+              const res = await fetch("https://chat.qwen.ai/api/v2/chat", {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",

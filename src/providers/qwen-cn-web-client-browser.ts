@@ -23,7 +23,7 @@ export interface QwenCNWebClientOptions {
 }
 
 /**
- * Qwen CN Web Client (qianwen.com 国内版) using Playwright browser context
+ * Qwen CN Web Client (qwen.ai 国内版) using Playwright browser context
  */
 export class QwenCNWebClientBrowser {
   private cookie: string;
@@ -31,7 +31,7 @@ export class QwenCNWebClientBrowser {
   private userAgent: string;
   private deviceId: string;
   private ut: string;
-  private baseUrl = "https://chat2.qianwen.com";
+  private baseUrl = "https://chat.qwen.ai";
   private browser: BrowserContext | null = null;
   private page: Page | null = null;
   private running: RunningChrome | null = null;
@@ -114,7 +114,7 @@ export class QwenCNWebClientBrowser {
       this.browser = ctx;
 
       const pages = ctx.pages();
-      let qwenPage = pages.find((p) => p.url().includes("qianwen.com"));
+      let qwenPage = pages.find((p) => p.url().includes("qwen.ai"));
 
       if (qwenPage) {
         console.log(`[Qwen CN Web Browser] Found existing Qwen CN page`);
@@ -122,7 +122,7 @@ export class QwenCNWebClientBrowser {
       } else {
         console.log(`[Qwen CN Web Browser] Creating new page`);
         this.page = await ctx.newPage();
-        await this.page.goto("https://www.qianwen.com/", { waitUntil: "domcontentloaded" });
+        await this.page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
       }
 
       console.log(`[Qwen CN Web Browser] Connected successfully`);
@@ -169,7 +169,7 @@ export class QwenCNWebClientBrowser {
         return {
           name: name?.trim() ?? "",
           value: valueParts.join("=").trim(),
-          domain: ".qianwen.com",
+          domain: ".qwen.ai",
           path: "/",
         };
       })

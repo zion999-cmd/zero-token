@@ -71,7 +71,7 @@ export async function loginQwenWeb(params: {
     const context = browser.contexts()[0];
     const page = context.pages()[0] || (await context.newPage());
 
-    await page.goto("https://chat.qwen.ai/");
+    await page.goto("https://www.qianwen.com/chat/");
     const userAgent = await page.evaluate(() => navigator.userAgent);
 
     params.onProgress("Please login to Qwen in the opened browser window...");
@@ -92,7 +92,7 @@ export async function loginQwenWeb(params: {
         }
 
         try {
-          const cookies = await context.cookies(["https://chat.qwen.ai", "https://qwen.ai"]);
+          const cookies = await context.cookies(["https://www.qianwen.com", "https://qianwen.com"]);
           if (cookies.length === 0) {
             console.log(`[Qwen] No cookies found in context yet.`);
             return;
@@ -135,7 +135,7 @@ export async function loginQwenWeb(params: {
 
       page.on("request", async (request) => {
         const url = request.url();
-        if (url.includes("qwen.ai")) {
+        if (url.includes("qianwen.com")) {
           const headers = request.headers();
           const auth = headers["authorization"];
           const cookie = headers["cookie"];
@@ -161,7 +161,7 @@ export async function loginQwenWeb(params: {
 
       page.on("response", async (response) => {
         const url = response.url();
-        if (url.includes("qwen.ai") && response.ok()) {
+        if (url.includes("qianwen.com") && response.ok()) {
           await tryResolve();
         }
       });
