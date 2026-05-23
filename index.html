@@ -348,16 +348,27 @@
     flex: 1; overflow-y: auto; padding: 0 12px 12px;
   }
   .log-entry {
-    padding: 8px 10px; margin-bottom: 6px; background: var(--surface2);
+    padding: 0; margin-bottom: 6px; background: var(--surface2);
     border-radius: var(--radius-sm); font-size: 11px; line-height: 1.5;
-    border-left: 2px solid var(--border); cursor: default;
+    border-left: 2px solid var(--border); cursor: default; overflow: hidden;
   }
+  .log-entry .log-summary {
+    padding: 6px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px;
+    align-items: center; cursor: pointer; user-select: none;
+  }
+  .log-entry .log-summary::-webkit-details-marker { display: none; }
+  .log-entry .log-summary::before { content: '▶'; font-size: 8px; margin-right: 2px; transition: transform .15s; color: var(--text3); }
+  .log-entry[open] .log-summary::before { transform: rotate(90deg); }
   .log-entry .log-time { color: var(--text3); font-size: 10px; }
   .log-entry .log-model { color: var(--accent); font-weight: 600; }
-  .log-entry .log-preview { color: var(--text2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .log-entry .log-meta { color: var(--text3); font-size: 10px; margin-top: 1px; }
+  .log-entry .log-preview { color: var(--text2); flex: 1; min-width: 60px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log-entry .log-meta { color: var(--text3); font-size: 10px; white-space: nowrap; }
   .log-entry.error { border-left-color: var(--red); }
   .log-entry.streaming { border-left-color: #f59e0b; }
+  .log-detail { padding: 0 10px 8px; }
+  .log-detail .log-section { margin-top: 6px; }
+  .log-detail .log-section b { color: var(--text2); font-size: 10px; display: block; margin-bottom: 2px; }
+  .log-detail pre { margin: 0; font-size: 10px; color: var(--text3); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; background: var(--bg); padding: 6px 8px; border-radius: 4px; }
 
   .log-panel-footer {
     padding: 8px 12px; border-top: 1px solid var(--border);
@@ -504,13 +515,20 @@ function renderLogPanel() {
     $logList.innerHTML = '<div style="color:var(--text3);font-size:11px;padding:8px;">选择模型发送消息后，日志将显示在这里</div>';
     return;
   }
-  $logList.innerHTML = reqLog.map(e => `
-    <div class="log-entry${e.error ? ' error' : ''}${e.streaming ? ' streaming' : ''}">
-      <div class="log-time">${e.time}</div>
-      <div class="log-model">${esc(e.model || '')}</div>
-      <div class="log-preview">${esc(e.preview || '')}</div>
-      <div class="log-meta">${e.ms}ms · ${e.tokens || 0} tokens · ${e.error ? '❌ ' + esc(e.error) : '✓'}</div>
-    </div>
+  $logList.innerHTML = reqLog.map((e, i) => `
+    <details class="log-entry${e.error ? ' error' : ''}${e.streaming ? ' streaming' : ''}" ${i === 0 && e.streaming ? 'open' : ''}>
+      <summary class="log-summary">
+        <span class="log-time">${e.time}</span>
+        <span class="log-model">${esc(e.model || '')}</span>
+        <span class="log-preview">${esc(e.preview || '')}</span>
+        <span class="log-meta">${e.ms}ms · ${e.tokens || 0}t · ${e.error ? '❌' : '✓'}</span>
+      </summary>
+      <div class="log-detail">
+        <div class="log-section"><b>请求:</b><pre>${esc(e.request || '')}</pre></div>
+        <div class="log-section"><b>响应:</b><pre>${esc(e.response || '(等待中...)')}</pre></div>
+        ${e.error ? `<div class="log-section" style="color:var(--red);"><b>错误:</b> ${esc(e.error)}</div>` : ''}
+      </div>
+    </details>
   `).join('');
 }
 
@@ -778,7 +796,8 @@ function splitThinking(text) {
 async function callLLM(messages, onDelta) {
   const t0 = Date.now();
   const lastMsg = messages[messages.length - 1]?.content?.slice(0, 60) || '';
-  addLogEntry({ time: timeStr(), model: currentModel.split('/').pop(), preview: lastMsg, ms: 0, tokens: 0, streaming: true });
+  const reqBody = JSON.stringify({ model: currentModel, messages: messages.slice(-3), stream: true, tools: toolsEnabled ? TEST_TOOLS.length : 0 });
+  addLogEntry({ time: timeStr(), model: currentModel, preview: lastMsg, ms: 0, tokens: 0, streaming: true, request: reqBody, response: '' });
   const headers = authHeaders({ 'Content-Type': 'application/json' });
   const cookie = getCookie();
   if (cookie) headers['x-cookie'] = cookie;
@@ -832,7 +851,7 @@ async function callLLM(messages, onDelta) {
     }
   }
   const totalTokens = (fullText + fullThinking).length;
-  if (reqLog[0]) { reqLog[0].ms = Date.now() - t0; reqLog[0].tokens = totalTokens; reqLog[0].streaming = false; renderLogPanel(); }
+  if (reqLog[0]) { reqLog[0].ms = Date.now() - t0; reqLog[0].tokens = totalTokens; reqLog[0].streaming = false; reqLog[0].response = JSON.stringify({ content: fullText.slice(0, 500), thinking: fullThinking.slice(0, 200), toolCalls: toolCalls.filter(Boolean).length }); renderLogPanel(); }
   return { content: fullText, thinking: fullThinking, toolCalls: toolCalls.filter(Boolean) };
 }
 
@@ -903,7 +922,7 @@ async function sendMessage() {
     }
   } catch (err) {
     loadingRow.remove();
-    if (reqLog[0]) { reqLog[0].error = err.message; reqLog[0].streaming = false; reqLog[0].ms = Date.now() - t0; renderLogPanel(); }
+    if (reqLog[0]) { reqLog[0].error = err.message; reqLog[0].streaming = false; reqLog[0].ms = Date.now() - t0; reqLog[0].response = '(error)'; renderLogPanel(); }
     showError(err.message);
   }
   isStreaming = false;
