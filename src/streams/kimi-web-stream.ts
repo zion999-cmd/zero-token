@@ -36,24 +36,46 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
         const messages = context.messages || [];
         const lastUserMsg = [...messages].reverse().find((m) => (m as { role: string }).role === "user");
         let prompt = "";
+        const imageUrls: Array<{ url: string; mimeType: string }> = [];
         if (lastUserMsg) {
           if (typeof lastUserMsg.content === "string") {
             prompt = lastUserMsg.content;
           } else if (Array.isArray(lastUserMsg.content)) {
-            prompt = (lastUserMsg.content as Array<{ type: string; text?: string }>)
-              .filter((p) => p.type === "text")
-              .map((p) => p.text || "")
-              .join("");
+            const parts = lastUserMsg.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+            for (const part of parts) {
+              if (part.type === "text" && part.text) {
+                prompt += part.text;
+              } else if (part.type === "image_url" && part.image_url?.url) {
+                const url = part.image_url.url;
+                const mimeMatch = url.match(/^data:([^;]+);/);
+                imageUrls.push({ url, mimeType: mimeMatch?.[1] || "image/png" });
+              }
+            }
           }
         }
 
         prompt = stripInboundMeta(prompt);
-        if (!prompt) {
+        if (!prompt && imageUrls.length === 0) {
           throw new Error("No message found to send to KimiWeb API");
         }
 
-        console.log(`[KimiWebStream] Prompt length: ${prompt.length}`);
-        console.log(`[KimiWebStream] Prompt preview: ${prompt.slice(0, 200).replace(/\n/g, " ")}`);
+        // Upload images
+        const fileMetas: import("../providers/kimi-web-client-browser.js").KimiFileMeta[] = [];
+        for (const img of imageUrls) {
+          if (img.url.startsWith("data:")) {
+            const base64 = img.url.split(",")[1];
+            if (base64) {
+              const buffer = Buffer.from(base64, "base64");
+              const ext = img.mimeType.split("/")[1] || "png";
+              console.log(`[KimiWebStream] Uploading image (${buffer.length} bytes, ${img.mimeType})...`);
+              const meta = await client.uploadFile(buffer, `image.${ext}`, img.mimeType);
+              fileMetas.push(meta);
+              console.log(`[KimiWebStream] Image uploaded: fileId=${meta.fileId}`);
+            }
+          }
+        }
+
+        console.log(`[KimiWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
         // Reuse conversation session when available
         const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
@@ -64,6 +86,7 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
           model: model.id,
           signal: streamOptions?.signal,
           conversationId: cachedCid || undefined,
+          fileMetas: fileMetas.length > 0 ? fileMetas : undefined,
         });
 
         if (!responseStream) {

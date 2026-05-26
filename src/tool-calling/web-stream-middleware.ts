@@ -302,10 +302,24 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
       promptTail: prompt.slice(-600),
     });
 
+    // Preserve image_url parts from the last user message so multimodal
+    // content survives the text-only history assembly.
+    const lastOrigMsg = [...messages].toReversed().find((m) => m.role === "user");
+    const imageParts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
+    if (lastOrigMsg && Array.isArray(lastOrigMsg.content)) {
+      for (const part of lastOrigMsg.content as Array<{ type: string; image_url?: { url: string } }>) {
+        if (part.type === "image_url" && part.image_url?.url) {
+          imageParts.push({ type: "image_url", image_url: { url: part.image_url.url } });
+        }
+      }
+    }
+
     // Create modified context with just the user message.
     // Spread the original context to preserve the full type, then override.
     const modifiedContext = Object.assign({}, context, {
-      messages: [{ role: "user" as const, content: prompt }],
+      messages: imageParts.length > 0
+        ? [{ role: "user" as const, content: [...imageParts, { type: "text" as const, text: prompt }] }]
+        : [{ role: "user" as const, content: prompt }],
       tools: [] as typeof context.tools,
       systemPrompt: "",
     });

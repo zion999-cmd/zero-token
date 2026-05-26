@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
 import { getHeadersWithAuth } from "../../../extensions/browser/src/browser/cdp.helpers.js";
@@ -13,6 +16,10 @@ import {
 } from "../../../extensions/browser/src/browser/config.js";
 import { loadConfig } from "../../config/io.js";
 import type { ModelDefinitionConfig } from "../../config/types.models.js";
+
+export interface KimiFileMeta {
+  fileId: string;
+}
 
 export interface KimiWebClientOptions {
   cookie?: string;
@@ -168,11 +175,88 @@ export class KimiWebClientBrowser {
     await this.ensureBrowser();
   }
 
+  /**
+   * Upload a file to Kimi via multipart/form-data.
+   * Returns the file ID for use in chat completions.
+   */
+  async uploadFile(
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+  ): Promise<KimiFileMeta> {
+    const { browser } = await this.ensureBrowser();
+
+    const cookies = await browser.cookies([this.baseUrl]);
+    const authToken = this.accessToken || cookies.find((c) => c.name === "kimi-auth")?.value;
+    if (!authToken) throw new Error("Kimi: no auth token for file upload");
+
+    const cookieHeader = cookies
+      .filter((c) => c.domain.includes("kimi.com") || c.domain.includes("moonshot.cn"))
+      .map((c) => `${c.name}=${c.value}`)
+      .join("; ");
+
+    // Build multipart/form-data body
+    const boundary = "----KimiUpload" + Date.now();
+    const ext = path.extname(fileName) || ".png";
+    const tmpPath = path.join(os.tmpdir(), `kimi-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+    await fs.writeFile(tmpPath, fileBuffer);
+
+    try {
+      const fileBytes = await fs.readFile(tmpPath);
+      const header = [
+        `--${boundary}`,
+        `Content-Disposition: form-data; name="file"; filename="${fileName}"`,
+        `Content-Type: ${mimeType}`,
+        "",
+        "",
+      ].join("\r\n");
+      const footer = `\r\n--${boundary}--\r\n`;
+
+      const headerBytes = new TextEncoder().encode(header);
+      const footerBytes = new TextEncoder().encode(footer);
+      const body = new Uint8Array(headerBytes.length + fileBytes.length + footerBytes.length);
+      body.set(headerBytes, 0);
+      body.set(fileBytes, headerBytes.length);
+      body.set(footerBytes, headerBytes.length + fileBytes.length);
+
+      const res = await fetch(`${this.baseUrl}/apiv2-files/file/upload`, {
+        method: "POST",
+        headers: {
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          Authorization: `Bearer ${authToken}`,
+          "X-Language": "zh-CN",
+          "X-Msh-Platform": "web",
+          Origin: this.baseUrl,
+          Referer: `${this.baseUrl}/`,
+          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+        },
+        body,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Kimi file upload failed: ${res.status} - ${text.slice(0, 300)}`);
+      }
+
+      const json = (await res.json()) as { file?: { id?: string } };
+      const fileId = json.file?.id;
+      if (!fileId) throw new Error(`Kimi upload: no file id in response`);
+
+      // Wait for file parse to complete (images are fast, ~2-5s)
+      await new Promise((r) => setTimeout(r, 5000));
+
+      return { fileId };
+    } finally {
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  }
+
   async chatCompletions(params: {
     conversationId?: string;
     message: string;
     model: string;
     signal?: AbortSignal;
+    fileMetas?: KimiFileMeta[];
   }): Promise<ReadableStream<Uint8Array>> {
     const { browser } = await this.ensureBrowser();
 
@@ -192,20 +276,35 @@ export class KimiWebClientBrowser {
       .map((c) => `${c.name}=${c.value}`)
       .join("; ");
 
+    const fileMetas = params.fileMetas || [];
+    const hasFiles = fileMetas.length > 0;
+
     const scenario = params.model.includes("search")
       ? "SCENARIO_SEARCH"
       : params.model.includes("research")
         ? "SCENARIO_RESEARCH"
         : params.model.includes("k1")
           ? "SCENARIO_K1"
-          : "SCENARIO_K2";
+          : hasFiles
+            ? "SCENARIO_K2D5"
+            : "SCENARIO_K2";
+
+    // Build message blocks
+    const blocks: Array<Record<string, unknown>> = [];
+    if (params.message) {
+      blocks.push({ message_id: "", text: { content: params.message } });
+    }
+    for (const f of fileMetas) {
+      blocks.push({ file: { id: f.fileId, status: "PROCESS_STATUS_SUCCESS" } });
+    }
 
     // Build ConnectRPC framed request body (5-byte header + JSON)
     const req: Record<string, unknown> = {
       scenario,
+      tools: hasFiles ? [{ type: "TOOL_TYPE_SEARCH", search: {} }] : [],
       message: {
         role: "user" as const,
-        blocks: [{ message_id: "", text: { content: params.message } }],
+        blocks,
         scenario,
       },
       options: { thinking: false },
@@ -361,7 +460,7 @@ export class KimiWebClientBrowser {
         name: "Moonshot v1 32K",
         api: "kimi-web",
         reasoning: false,
-        input: ["text"],
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 32000,
         maxTokens: 4096,

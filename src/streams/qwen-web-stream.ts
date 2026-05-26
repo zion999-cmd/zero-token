@@ -42,6 +42,11 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
         await client.init();
 
         const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
+        const prevSessionKey = conversationMap.get("__last_key");
+        if (sessionKey !== prevSessionKey) {
+          client.resetSession();
+          conversationMap.set("__last_key", sessionKey);
+        }
         let conversationId = conversationMap.get(sessionKey);
 
         const messages = context.messages || [];
@@ -49,26 +54,49 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
         // Qwen web uses DOM simulation — only send the last user message.
         // System prompts, tools, and full history would overwhelm the input.
         let prompt = "";
+        const imageUrls: Array<{ url: string; mimeType: string }> = [];
         const lastUserMessage = [...messages].toReversed().find((m) => m.role === "user");
         if (lastUserMessage) {
           if (typeof lastUserMessage.content === "string") {
             prompt = lastUserMessage.content;
           } else if (Array.isArray(lastUserMessage.content)) {
-            prompt = (lastUserMessage.content as TextContent[])
-              .filter((part) => part.type === "text")
-              .map((part) => part.text)
-              .join("");
+            const parts = lastUserMessage.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+            for (const part of parts) {
+              if (part.type === "text" && part.text) {
+                prompt += part.text;
+              } else if (part.type === "image_url" && part.image_url?.url) {
+                const url = part.image_url.url;
+                const mimeMatch = url.match(/^data:([^;]+);/);
+                imageUrls.push({ url, mimeType: mimeMatch?.[1] || "image/png" });
+              }
+            }
           }
         }
 
         prompt = stripInboundMeta(prompt);
-        if (!prompt) {
+        if (!prompt && imageUrls.length === 0) {
           throw new Error("No message found to send to Qwen API");
+        }
+
+        // Upload images via the browser page
+        const fileMetas: import("../providers/qwen-web-client-browser.js").QwenFileMeta[] = [];
+        for (const img of imageUrls) {
+          if (img.url.startsWith("data:")) {
+            const base64 = img.url.split(",")[1];
+            if (base64) {
+              const buffer = Buffer.from(base64, "base64");
+              const ext = img.mimeType.split("/")[1] || "png";
+              console.log(`[QwenWebStream] Uploading image (${buffer.length} bytes, ${img.mimeType})...`);
+              const meta = await client.uploadFile(buffer, `image.${ext}`, img.mimeType);
+              fileMetas.push(meta);
+              console.log(`[QwenWebStream] Image uploaded: fileUuid=${meta.fileUuid}`);
+            }
+          }
         }
 
         console.log(`[QwenWebStream] Starting run for session: ${sessionKey}`);
         console.log(`[QwenWebStream] Conversation ID: ${conversationId || "new"}`);
-        console.log(`[QwenWebStream] Prompt length: ${prompt.length}`);
+        console.log(`[QwenWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
         // Map our model ID to Qwen API model name
         const qwenModel = model.id?.includes("qwen") ? "qwen3.5-plus" : model.id;
@@ -78,6 +106,7 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
           message: prompt,
           model: qwenModel,
           signal: streamOptions?.signal,
+          fileMetas: fileMetas.length > 0 ? fileMetas : undefined,
         });
 
         if (!responseStream) {
@@ -328,10 +357,26 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
           checkTags();
         };
 
+        let intlAccumulatedText = ""; // Track accumulated text for international API (chat2.qianwen.com)
+        let firstLine = true;
         const processLine = (line: string) => {
           if (!line || !line.startsWith("data:")) {
+            // Qwen API may return a JSON error response instead of SSE
+            if (firstLine && line.startsWith("{")) {
+              try {
+                const err = JSON.parse(line);
+                if (err.success === false) {
+                  throw new Error(`Qwen API error: ${err.data?.code || "unknown"} - ${err.data?.details || JSON.stringify(err)}`);
+                }
+              } catch (e) {
+                if (e instanceof SyntaxError) { /* not JSON, ignore */ }
+                else throw e;
+              }
+            }
+            firstLine = false;
             return;
           }
+          firstLine = false;
 
           const dataStr = line.slice(5).trim();
           if (dataStr === "[DONE]" || !dataStr) {
@@ -346,11 +391,27 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
               conversationMap.set(sessionKey, data.sessionId || data.conversationId);
             }
 
-            // Extract content delta - Qwen v2 uses choices[0].delta.content
-            const delta =
-              data.choices?.[0]?.delta?.content ?? data.text ?? data.content ?? data.delta;
-            if (typeof delta === "string" && delta) {
-              pushDelta(delta);
+            // Extract content delta.
+            // International API (chat2.qianwen.com): data.data.messages[] with mime_type
+            // Domestic API (chat.qwen.ai): choices[0].delta.content
+            if (data.data?.messages && Array.isArray(data.data.messages)) {
+              for (const msg of data.data.messages as Array<{ mime_type?: string; content?: string; status?: string }>) {
+                if (msg.content && (msg.mime_type === "text/plain" || msg.mime_type === "multi_load/iframe")) {
+                  // The API sends accumulated text, not deltas. Only emit new characters.
+                  const prevLen = intlAccumulatedText.length;
+                  if (msg.content.length > prevLen) {
+                    const delta = msg.content.slice(prevLen);
+                    intlAccumulatedText = msg.content;
+                    pushDelta(delta);
+                  }
+                }
+              }
+            } else {
+              const delta =
+                data.choices?.[0]?.delta?.content ?? data.text ?? data.content ?? data.delta;
+              if (typeof delta === "string" && delta) {
+                pushDelta(delta);
+              }
             }
           } catch {
             // Ignore parse errors

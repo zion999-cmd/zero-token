@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
 import { getHeadersWithAuth } from "../../../extensions/browser/src/browser/cdp.helpers.js";
@@ -15,6 +18,15 @@ import {
 import { loadConfig } from "../../config/io.js";
 import type { ModelDefinitionConfig } from "../../config/types.models.js";
 
+export interface QwenFileMeta {
+  fileUuid: string;
+  batchId: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  url: string;
+}
+
 export interface QwenWebClientOptions {
   sessionToken: string;
   cookie?: string;
@@ -22,17 +34,24 @@ export interface QwenWebClientOptions {
 }
 
 /**
- * Qwen Web Client using Playwright browser context
+ * Qwen Web Client using Playwright browser context.
+ * International version: page at www.qianwen.com/chat/, API at chat2.qianwen.com.
  */
 export class QwenWebClientBrowser {
   private sessionToken: string;
   private cookie: string;
   private userAgent: string;
-  private baseUrl = "https://chat.qwen.ai";       // API gateway
-  private pageUrl = "https://www.qianwen.com/chat/"; // web UI
+  private apiBase = "https://chat2.qianwen.com";
+  private pageUrl = "https://www.qianwen.com/chat/";
   private browser: BrowserContext | null = null;
   private page: Page | null = null;
   private running: RunningChrome | null = null;
+
+  // Session state for conversation continuity
+  private sessionId = "";
+  private topicId = "";
+  private lastReqId = "";
+  private deviceId = "";
 
   constructor(options: QwenWebClientOptions | string) {
     if (typeof options === "string") {
@@ -45,6 +64,27 @@ export class QwenWebClientBrowser {
       this.cookie = options.cookie || `qwen_session=${options.sessionToken}`;
       this.userAgent = options.userAgent || "Mozilla/5.0";
     }
+  }
+
+  /** Generate a topic ID in the same format the page uses (22 char base62). */
+  private generateTopicId(): string {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    let result = "";
+    const bytes = crypto.randomBytes(16);
+    for (let i = 0; i < 22; i++) {
+      result += chars[bytes[i % 16] % chars.length];
+    }
+    return result;
+  }
+
+  /** Extract device ID from browser cookies. */
+  private async resolveDeviceId(): Promise<string> {
+    if (this.deviceId) return this.deviceId;
+    const { browser } = await this.ensureBrowser();
+    const cookies = await browser.cookies([this.pageUrl]);
+    const utCookie = cookies.find((c) => c.name === "b-user-id");
+    this.deviceId = utCookie?.value || "";
+    return this.deviceId;
   }
 
   private async ensureBrowser() {
@@ -141,92 +181,199 @@ export class QwenWebClientBrowser {
 
   async init() {
     await this.ensureBrowser();
+    await this.resolveDeviceId();
   }
 
-  
+  /**
+   * Upload an image through the browser page and capture the file metadata
+   * from the Qwen file/record/add API response via CDP.
+   */
+  async uploadFile(
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+  ): Promise<QwenFileMeta> {
+    const { page } = await this.ensureBrowser();
+
+    // Reload to ensure React event handlers are attached
+    await page.goto(this.pageUrl, { waitUntil: "domcontentloaded" });
+    await new Promise((r) => setTimeout(r, 4000));
+
+    const ext = path.extname(fileName) || ".png";
+    const tmpPath = path.join(os.tmpdir(), `qwen-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+    await fs.writeFile(tmpPath, fileBuffer);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let cdpSession: any = null;
+    try {
+      cdpSession = await page.context().newCDPSession(page);
+      await cdpSession.send("Network.enable");
+
+      let resolveFileRecord: (data: { response: Record<string, unknown>; requestBody: Record<string, unknown> }) => void;
+      const fileRecordPromise = new Promise<{ response: Record<string, unknown>; requestBody: Record<string, unknown> }>((resolve) => {
+        resolveFileRecord = resolve;
+      });
+
+      const requestBodyMap = new Map<string, Record<string, unknown>>();
+
+      cdpSession.on(
+        "Network.requestWillBeSent",
+        (params: { requestId: string; request: { url: string; postData?: string } }) => {
+          if (params.request.url.includes("file/record/add") && params.request.postData) {
+            try {
+              requestBodyMap.set(params.requestId, JSON.parse(params.request.postData));
+            } catch { /* ignore */ }
+          }
+        },
+      );
+
+      cdpSession.on(
+        "Network.responseReceived",
+        async (params: { response: { url: string; status: number }; requestId: string }) => {
+          if (params.response.url.includes("file/record/add") && params.response.status === 200) {
+            const reqBody = requestBodyMap.get(params.requestId);
+            try {
+              const body = (await cdpSession!.send("Network.getResponseBody", {
+                requestId: params.requestId,
+              })) as { body: string };
+              const json = JSON.parse(body.body) as Record<string, unknown>;
+              if (json?.data && reqBody) {
+                resolveFileRecord({ response: json, requestBody: reqBody });
+              }
+            } catch { /* ignore */ }
+          }
+        },
+      );
+
+      const fileInput = await page.$(
+        'input[type="file"][accept*=".png"], input[type="file"][accept*="image"]',
+      );
+      if (!fileInput) {
+        throw new Error("No image file input found on Qwen page");
+      }
+
+      await fileInput.setInputFiles(tmpPath);
+
+      const timeoutMs = 60_000;
+      const result = await Promise.race([
+        fileRecordPromise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("File upload timed out")), timeoutMs),
+        ),
+      ]);
+
+      const data = result.response.data as Record<string, unknown>;
+      if (!data?.fileUuid) {
+        throw new Error(`No fileUuid in upload response: ${JSON.stringify(result.response)}`);
+      }
+
+      const reqBody = result.requestBody;
+      const url =
+        (reqBody.resourcePath as string) ||
+        ((reqBody.resourceInfos as Array<{ url: string }>)?.[0]?.url) ||
+        "";
+
+      return {
+        fileUuid: data.fileUuid as string,
+        batchId: (data.batchId as string) || "",
+        fileName,
+        fileSize: fileBuffer.length,
+        fileType: mimeType.startsWith("image/") ? "image" : "file",
+        url,
+      };
+    } finally {
+      if (cdpSession) {
+        await cdpSession.send("Network.disable").catch(() => {});
+      }
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  }
+
   async chatCompletions(params: {
     message: string;
     model?: string;
     signal?: AbortSignal;
+    fileMetas?: QwenFileMeta[];
   }): Promise<ReadableStream<Uint8Array>> {
     const { browser } = await this.ensureBrowser();
+    const deviceId = await this.resolveDeviceId();
 
     const model = params.model || "qwen3.5-plus";
+    const fileMetas = params.fileMetas || [];
+    const hasFiles = fileMetas.length > 0;
 
-    console.log(`[Qwen Web Browser] Sending (model: ${model}, len: ${params.message.length})`);
+    // Generate session state for new conversations
+    const isFirstTurn = !this.sessionId;
+    if (isFirstTurn) {
+      this.sessionId = crypto.randomUUID().replace(/-/g, "");
+      this.topicId = this.generateTopicId();
+      this.lastReqId = "";
+    }
 
-    // Get cookies from browser context for API auth
-    const cookies = await browser.cookies([this.baseUrl, this.pageUrl]);
-    const cookieHeader = cookies
-      .map((c) => `${c.name}=${c.value}`)
-      .join("; ");
+    const reqId = crypto.randomUUID().replace(/-/g, "");
+    const ts = Math.floor(Date.now() / 1000);
+    const nonce = Math.random().toString(36).slice(2, 10);
 
-    // Step 1: Create chat session via Node.js fetch
-    const createChatTimeoutMs = 30_000;
-    const ctrl1 = new AbortController();
-    const t1 = setTimeout(() => ctrl1.abort(), createChatTimeoutMs);
+    console.log(`[Qwen Web Browser] Sending (model: ${model}, session: ${this.sessionId.slice(0, 8)}..., files: ${fileMetas.length})`);
 
-    let createRes: Response;
-    try {
-      createRes = await fetch(`${this.baseUrl}/api/v2/chats/new`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+    // Build messages array
+    const apiMessages: Array<Record<string, unknown>> = [];
+
+    if (hasFiles) {
+      // Send image message with resource URLs
+      apiMessages.push({
+        mime_type: "image/url",
+        content: "",
+        meta_data: {
+          resource_infos: fileMetas.map((f) => ({ url: f.url })),
         },
-        body: JSON.stringify({}),
-        signal: ctrl1.signal,
+        status: "complete",
       });
-    } catch (err) {
-      clearTimeout(t1);
-      throw new Error(`Failed to create Qwen chat: ${String(err)}`);
-    }
-    clearTimeout(t1);
-
-    if (!createRes.ok) {
-      const errText = await createRes.text().catch(() => "");
-      throw new Error(`Failed to create Qwen chat: ${createRes.status} - ${errText.slice(0, 300)}`);
     }
 
-    const createData = await createRes.json() as Record<string, unknown>;
-    const chatId = (createData as any).data?.id ?? (createData as any).chat_id ?? (createData as any).id;
-    if (!chatId) {
-      throw new Error("No chat_id in Qwen response");
+    // Send text message
+    const textContent = params.message || (hasFiles ? "描述这张图片" : "");
+    if (textContent) {
+      apiMessages.push({
+        mime_type: "text/plain",
+        content: textContent,
+        meta_data: { ori_query: textContent },
+        status: "complete",
+      });
     }
-    console.log(`[Qwen Web Browser] Chat ID: ${chatId}`);
 
-    // Step 2: Send message via Node.js fetch
-    const fetchTimeoutMs = 300_000;
-    const fid = crypto.randomUUID();
-    const ctrl2 = new AbortController();
-    const t2 = setTimeout(() => ctrl2.abort(), fetchTimeoutMs);
-
-    const requestBody = {
-      stream: true,
-      version: "2.1",
-      incremental_output: true,
-      chat_id: chatId,
-      chat_mode: "normal",
-      model: model,
-      parent_id: null,
-      messages: [{
-        fid,
-        parentId: null,
-        childrenIds: [],
-        role: "user",
-        content: params.message,
-        user_action: "chat",
-        files: [],
-        timestamp: Math.floor(Date.now() / 1000),
-        models: [model],
-        chat_type: "t2t",
-        feature_config: { thinking_enabled: true, output_schema: "phase" },
-      }],
+    const requestBody: Record<string, unknown> = {
+      req_id: reqId,
+      parent_req_id: this.lastReqId || "0",
+      messages: apiMessages,
+      scene: "chat",
+      sub_scene: "",
+      scene_param: isFirstTurn ? "first_turn" : "continue_chat",
+      session_id: this.sessionId,
+      biz_id: "ai_qwen",
+      topic_id: this.topicId,
+      model: "Qwen",
+      from: "default",
+      protocol_version: "v2",
+      messages_merge: false,
+      chat_client: "h5",
+      deep_search: "0",
+      temporary: false,
     };
+
+    // Get cookies for API auth
+    const cookies = await browser.cookies([this.apiBase, this.pageUrl]);
+    const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+
+    const url = `${this.apiBase}/api/v2/chat?biz_id=ai_qwen&chat_client=h5&device=pc&fr=pc&pr=qwen&ut=${deviceId}&wv=2.9.7&ve=2.9.7&nonce=${nonce}&timestamp=${ts}`;
+
+    const fetchTimeoutMs = 300_000;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), fetchTimeoutMs);
 
     let msgRes: Response;
     try {
-      msgRes = await fetch(`${this.baseUrl}/api/v2/chat/completions?chat_id=${chatId}`, {
+      msgRes = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -234,17 +381,17 @@ export class QwenWebClientBrowser {
           ...(cookieHeader ? { Cookie: cookieHeader } : {}),
         },
         body: JSON.stringify(requestBody),
-        signal: ctrl2.signal,
+        signal: ctrl.signal,
       });
     } catch (err) {
-      clearTimeout(t2);
+      clearTimeout(timeout);
       const msg = String(err);
       if (msg.includes("aborted") || msg.includes("signal")) {
         throw new Error(`Qwen API request timed out after ${fetchTimeoutMs / 1000}s`);
       }
       throw err;
     }
-    clearTimeout(t2);
+    clearTimeout(timeout);
 
     if (!msgRes.ok) {
       if (msgRes.status === 401 || msgRes.status === 403) {
@@ -254,7 +401,10 @@ export class QwenWebClientBrowser {
       throw new Error(`Qwen API error: ${msgRes.status} - ${errText.slice(0, 300)}`);
     }
 
-    // Stream the response directly
+    // Save reqId for next turn
+    this.lastReqId = reqId;
+
+    // Stream the response
     const reader = msgRes.body?.getReader();
     if (!reader) throw new Error("Qwen API returned empty response body");
 
@@ -276,6 +426,13 @@ export class QwenWebClientBrowser {
     });
   }
 
+  /** Reset session for a new conversation. */
+  resetSession() {
+    this.sessionId = "";
+    this.topicId = "";
+    this.lastReqId = "";
+  }
+
   async close() {
     if (this.running) {
       await stopOpenClawChrome(this.running);
@@ -292,7 +449,7 @@ export class QwenWebClientBrowser {
         name: "Qwen 3.5 Plus",
         api: "qwen-web",
         reasoning: false,
-        input: ["text"],
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 32768,
         maxTokens: 8192,

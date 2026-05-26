@@ -8,18 +8,18 @@
 
 ## 支持的供应商
 
-| 供应商 | 聊天 | 工具调用 | 方式 |
-|--------|------|---------|------|
-| DeepSeek | ✅ | ✅ | 纯 HTTP API (含 PoW 解题) |
-| Claude | ✅ | ✅ | 浏览器内 API (绕过 Cloudflare) |
-| Kimi | ✅ | ✅ | 浏览器客户端 (attach) |
-| ChatGLM | ✅ | ✅ | 浏览器客户端 (attach) |
-| Qwen | ✅ | ✅ | 浏览器客户端 (attach) |
-| Grok | ✅ | ⚠️ | DOM 交互 (anti-bot 绕过) |
-| Doubao | ✅ | ⚠️ | 浏览器客户端 (间歇可用) |
-| ChatGPT | ⚠️ | — | 需先登录 |
-| Gemini | ❌ | — | 地区限制 |
-| 其他 | ⚠️ | — | 待测试 |
+| 供应商 | 聊天 | 工具调用 | 图片识别 | 方式 |
+|--------|------|---------|---------|------|
+| DeepSeek | ✅ | ✅ | — | 纯 HTTP API (含 PoW 解题) |
+| Claude | ✅ | ✅ | — | 浏览器内 API (绕过 Cloudflare) |
+| Kimi | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 Node.js 直传 |
+| ChatGLM | ✅ | ✅ | — | 浏览器客户端 (attach) |
+| Qwen 国际版 | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 CDP 上传至 OSS |
+| Grok | ✅ | ⚠️ | — | DOM 交互 (anti-bot 绕过) |
+| Doubao | ✅ | ⚠️ | — | 浏览器客户端 (间歇可用) |
+| ChatGPT | ⚠️ | — | — | 需先登录 |
+| Gemini | ❌ | — | — | 地区限制 |
+| 其他 | ⚠️ | — | — | 待测试 |
 
 ## 快速开始
 
@@ -236,6 +236,30 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
   }]
 }
 ```
+
+### 多模态输入 (图片识别)
+
+Kimi 和 Qwen 国际版支持 OpenAI Vision API 格式的图片输入：
+
+```bash
+curl -X POST http://127.0.0.1:3001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kimi-web/moonshot-v1-32k",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "描述这张图片"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo..."}}
+      ]
+    }]
+  }'
+```
+
+实现细节：
+- **Kimi**：图片通过 Node.js `fetch()` 直接上传到 `/apiv2-files/file/upload`（multipart/form-data），无需浏览器介入
+- **Qwen 国际版**：图片通过浏览器 CDP 上传到 OSS，再由 `chat-side.qianwen.com` 注册文件，浏览器仅用于绕过上传鉴权
+- 浏览器实例在整个会话中复用，不会为每张图片单独启动浏览器
 
 供应商 Prompt 策略：
 
