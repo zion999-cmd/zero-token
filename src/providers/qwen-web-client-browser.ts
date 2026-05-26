@@ -27,6 +27,12 @@ export interface QwenFileMeta {
   url: string;
 }
 
+export interface QwenSessionState {
+  sessionId: string;
+  topicId: string;
+  lastReqId: string;
+}
+
 export interface QwenWebClientOptions {
   sessionToken: string;
   cookie?: string;
@@ -52,6 +58,22 @@ export class QwenWebClientBrowser {
   private topicId = "";
   private lastReqId = "";
   private deviceId = "";
+
+  /** Expose session state so the stream can persist it across requests. */
+  getSessionState(): QwenSessionState {
+    return {
+      sessionId: this.sessionId,
+      topicId: this.topicId,
+      lastReqId: this.lastReqId,
+    };
+  }
+
+  /** Restore a previously saved session state. */
+  restoreSession(state: QwenSessionState) {
+    this.sessionId = state.sessionId;
+    this.topicId = state.topicId;
+    this.lastReqId = state.lastReqId;
+  }
 
   constructor(options: QwenWebClientOptions | string) {
     if (typeof options === "string") {
@@ -294,6 +316,7 @@ export class QwenWebClientBrowser {
     model?: string;
     signal?: AbortSignal;
     fileMetas?: QwenFileMeta[];
+    sessionState?: QwenSessionState;
   }): Promise<ReadableStream<Uint8Array>> {
     const { browser } = await this.ensureBrowser();
     const deviceId = await this.resolveDeviceId();
@@ -301,6 +324,11 @@ export class QwenWebClientBrowser {
     const model = params.model || "qwen3.5-plus";
     const fileMetas = params.fileMetas || [];
     const hasFiles = fileMetas.length > 0;
+
+    // Restore persisted session state before generating a new one
+    if (params.sessionState?.sessionId) {
+      this.restoreSession(params.sessionState);
+    }
 
     // Generate session state for new conversations
     const isFirstTurn = !this.sessionId;
@@ -314,7 +342,7 @@ export class QwenWebClientBrowser {
     const ts = Math.floor(Date.now() / 1000);
     const nonce = Math.random().toString(36).slice(2, 10);
 
-    console.log(`[Qwen Web Browser] Sending (model: ${model}, session: ${this.sessionId.slice(0, 8)}..., files: ${fileMetas.length})`);
+    console.log(`[Qwen Web Browser] Sending (model: ${model}, session: ${this.sessionId.slice(0, 8)}..., files: ${fileMetas.length}, scene_param: ${isFirstTurn ? "first_turn" : "continue_chat"})`);
 
     // Build messages array
     const apiMessages: Array<Record<string, unknown>> = [];

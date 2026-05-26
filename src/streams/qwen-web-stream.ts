@@ -9,10 +9,11 @@ import {
 import {
   QwenWebClientBrowser,
   type QwenWebClientOptions,
+  type QwenSessionState,
 } from "../providers/qwen-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
 
-const conversationMap = new Map<string, string>();
+const sessionStateMap = new Map<string, QwenSessionState>();
 
 export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
   let options: QwenWebClientOptions;
@@ -42,12 +43,15 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
         await client.init();
 
         const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
-        const prevSessionKey = conversationMap.get("__last_key");
-        if (sessionKey !== prevSessionKey) {
+        const prevSessionKey = sessionStateMap.get("__last_key");
+        if (prevSessionKey && sessionKey !== (prevSessionKey as unknown as string)) {
+          // Different session - reset client so it generates new session state
           client.resetSession();
-          conversationMap.set("__last_key", sessionKey);
         }
-        let conversationId = conversationMap.get(sessionKey);
+        sessionStateMap.set("__last_key", sessionKey as unknown as QwenSessionState);
+
+        // Restore persisted session state for this session key
+        const savedState = sessionStateMap.get(sessionKey);
 
         const messages = context.messages || [];
 
@@ -94,19 +98,18 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
           }
         }
 
-        console.log(`[QwenWebStream] Starting run for session: ${sessionKey}`);
-        console.log(`[QwenWebStream] Conversation ID: ${conversationId || "new"}`);
+        console.log(`[QwenWebStream] Starting run for sessionKey=${sessionKey}, saved=${savedState?.sessionId?.slice(0, 8) || "none"}`);
         console.log(`[QwenWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
         // Map our model ID to Qwen API model name
         const qwenModel = model.id?.includes("qwen") ? "qwen3.5-plus" : model.id;
 
         const responseStream = await client.chatCompletions({
-          conversationId,
           message: prompt,
           model: qwenModel,
           signal: streamOptions?.signal,
           fileMetas: fileMetas.length > 0 ? fileMetas : undefined,
+          sessionState: savedState,
         });
 
         if (!responseStream) {
@@ -386,10 +389,8 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
           try {
             const data = JSON.parse(dataStr);
 
-            // Extract conversation ID
-            if (data.sessionId || data.conversationId) {
-              conversationMap.set(sessionKey, data.sessionId || data.conversationId);
-            }
+            // Capture server-returned session ID if different from our generated one.
+            // The real session state (sessionId + topicId + lastReqId) is saved after response completes.
 
             // Extract content delta.
             // International API (chat2.qianwen.com): data.data.messages[] with mime_type
@@ -448,8 +449,11 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
           emitDelta(mode, tagBuffer);
         }
 
+        // Persist session state for the next request on this session key
+        const newState = client.getSessionState();
+        sessionStateMap.set(sessionKey, newState);
         console.log(
-          `[QwenWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}`,
+          `[QwenWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}, session: ${newState.sessionId.slice(0, 8)}...`,
         );
 
         stream.push({
