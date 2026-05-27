@@ -50,8 +50,8 @@ for i in $(seq 1 15); do
     )
     echo "正在打开 ${#PLATFORMS[@]} 个标签页..."
     for url in "${PLATFORMS[@]}"; do
-      # 用 open 在已有 Chrome 中打开标签页，不启动新进程
-      open -a "Google Chrome" "$url" 2>/dev/null &
+      # 用相同 user-data-dir 打开标签页（复用已有调试 Chrome 实例）
+      "$CHROME_PATH" --user-data-dir="$USER_DATA_DIR" "$url" >/dev/null 2>&1 &
       sleep 0.3
     done
     echo "✓ 已全部打开"
