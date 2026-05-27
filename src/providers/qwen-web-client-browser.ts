@@ -207,8 +207,12 @@ export class QwenWebClientBrowser {
 
   /**
    * Upload an image through the browser page's file input.
-   * Uses the main page (no extra pages created) and clears uploaded images
+   * Reuses the main page (no extra pages) and clears uploaded images
    * from the chat input after each upload to prevent the 10-image limit.
+   *
+   * The oss_token→OSS→callback→file/record/add chain requires browser session
+   * integrity, so we let the page's JS handle the upload flow and extract the
+   * file/record/add response via CDP.
    */
   async uploadFile(
     fileBuffer: Buffer,
@@ -217,7 +221,6 @@ export class QwenWebClientBrowser {
   ): Promise<QwenFileMeta> {
     const { page } = await this.ensureBrowser();
 
-    // Write to temp file for setInputFiles
     const ext = path.extname(fileName) || ".png";
     const tmpPath = path.join("/tmp", `qwen-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
     await fs.writeFile(tmpPath, fileBuffer);
@@ -306,8 +309,7 @@ export class QwenWebClientBrowser {
       await page.evaluate(() => {
         const input = document.querySelector('input[type="file"]') as HTMLInputElement | null;
         if (input) input.value = "";
-        // Click any visible close/remove buttons on image previews
-        document.querySelectorAll('[class*="close"], [class*="remove"], [class*="delete"], [class*="clear"]').forEach((el) => {
+        document.querySelectorAll('[class*="close"], [class*="remove"], [class*="delete"]').forEach((el) => {
           (el as HTMLElement).click();
         });
       }).catch(() => {});
