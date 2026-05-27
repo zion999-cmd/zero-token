@@ -77,13 +77,20 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
 
         console.log(`[KimiWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
-        // Image requests share a default session per model to avoid creating one per frame.
-        // Text-only requests use the context sessionId (auto-derived or explicit).
+        // Determine session key:
+        // - Explicit session_id → use it directly
+        // - Standalone request (no history) → model-scoped default to avoid creating one per call
+        // - Multi-turn conversation → auto-derived key from message hash
         const ctx = context as unknown as { sessionId?: string; hasSessionId?: boolean };
-        const hasImages = imageUrls.length > 0;
-        const sessionKey = hasImages
-          ? (ctx.hasSessionId ? ctx.sessionId! : `img:${model.api}`)
-          : (ctx.sessionId || "default");
+        const hasHistory = messages.some((m) => (m as { role: string }).role === "assistant" || (m as { role: string }).role === "tool");
+        let sessionKey: string;
+        if (ctx.hasSessionId) {
+          sessionKey = ctx.sessionId!;
+        } else if (hasHistory) {
+          sessionKey = ctx.sessionId || "default";
+        } else {
+          sessionKey = `txt:${model.api}`;
+        }
         const cachedCid = sessionMap.get(sessionKey);
 
         const responseStream = await client.chatCompletions({
