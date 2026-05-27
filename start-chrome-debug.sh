@@ -17,7 +17,7 @@ USER_DATA_DIR="$HOME/.config/chrome-myzt-debug"
 # 关闭已有的调试 Chrome
 pgrep -f "chrome.*remote-debugging-port=9222" >/dev/null 2>&1 && pkill -f "chrome.*remote-debugging-port=9222" 2>/dev/null && sleep 2
 
-# 启动调试 Chrome
+# 启动调试 Chrome（单实例）
 "$CHROME_PATH" \
   --remote-debugging-port=9222 \
   --user-data-dir="$USER_DATA_DIR" \
@@ -48,9 +48,10 @@ for i in $(seq 1 15); do
       "https://www.perplexity.ai"
       "https://gemini.google.com/app"
     )
-    echo "正在打开 ${#PLATFORMS[@]} 个平台..."
+    echo "正在打开 ${#PLATFORMS[@]} 个标签页..."
     for url in "${PLATFORMS[@]}"; do
-      "$CHROME_PATH" --remote-debugging-port=9222 --user-data-dir="$USER_DATA_DIR" "$url" >/dev/null 2>&1 &
+      # 用 open 在已有 Chrome 中打开标签页，不启动新进程
+      open -a "Google Chrome" "$url" 2>/dev/null &
       sleep 0.3
     done
     echo "✓ 已全部打开"
