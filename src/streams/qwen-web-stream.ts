@@ -42,14 +42,6 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
       try {
         await client.init();
 
-        // Use explicit session_id if provided, otherwise use a single default session.
-        // Clients should NOT need to know about upstream session management - the gateway handles it.
-        const ctx = context as unknown as { sessionId?: string; hasSessionId?: boolean };
-        const sessionKey = ctx.hasSessionId ? (ctx.sessionId || "default") : "default";
-
-        // Restore persisted session state for this session key
-        const savedState = sessionStateMap.get(sessionKey);
-
         const messages = context.messages || [];
 
         // Qwen web uses DOM simulation — only send the last user message.
@@ -78,6 +70,15 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
         if (!prompt && imageUrls.length === 0) {
           throw new Error("No message found to send to Qwen API");
         }
+
+        // Image requests share a single default session to avoid creating one per frame.
+        // Text-only requests use the context sessionId (auto-derived or explicit).
+        const ctx = context as unknown as { sessionId?: string; hasSessionId?: boolean };
+        const hasImages = imageUrls.length > 0;
+        const sessionKey = hasImages
+          ? (ctx.hasSessionId ? (ctx.sessionId || "image-default") : "image-default")
+          : (ctx.sessionId || "default");
+        const savedState = sessionStateMap.get(sessionKey);
 
         // Upload images via the browser page
         const fileMetas: import("../providers/qwen-web-client-browser.js").QwenFileMeta[] = [];

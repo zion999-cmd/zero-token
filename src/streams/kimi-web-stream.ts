@@ -77,10 +77,13 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
 
         console.log(`[KimiWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
-        // Use explicit session_id if provided, otherwise use a single default session.
-        // Clients should NOT need to know about upstream session management - the gateway handles it.
+        // Image requests share a single default session to avoid creating one per frame.
+        // Text-only requests use the context sessionId (auto-derived or explicit).
         const ctx = context as unknown as { sessionId?: string; hasSessionId?: boolean };
-        const sessionKey = ctx.hasSessionId ? (ctx.sessionId || "default") : "default";
+        const hasImages = imageUrls.length > 0;
+        const sessionKey = hasImages
+          ? (ctx.hasSessionId ? (ctx.sessionId || "image-default") : "image-default")
+          : (ctx.sessionId || "default");
         const cachedCid = sessionMap.get(sessionKey);
 
         const responseStream = await client.chatCompletions({
