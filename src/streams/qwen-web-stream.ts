@@ -42,13 +42,10 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
       try {
         await client.init();
 
-        const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
-        const prevSessionKey = sessionStateMap.get("__last_key");
-        if (prevSessionKey && sessionKey !== (prevSessionKey as unknown as string)) {
-          // Different session - reset client so it generates new session state
-          client.resetSession();
-        }
-        sessionStateMap.set("__last_key", sessionKey as unknown as QwenSessionState);
+        // Use explicit session_id if provided, otherwise use a single default session.
+        // Clients should NOT need to know about upstream session management - the gateway handles it.
+        const ctx = context as unknown as { sessionId?: string; hasSessionId?: boolean };
+        const sessionKey = ctx.hasSessionId ? (ctx.sessionId || "default") : "default";
 
         // Restore persisted session state for this session key
         const savedState = sessionStateMap.get(sessionKey);

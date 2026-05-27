@@ -242,7 +242,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     const streamFn = factory(cookie);
     const modelArg = { api: apiId, provider: apiId, id: model };
     // Group related requests by LAST user message (Claude Code sends duplicates)
-    const context = { messages, tools: tools || [], tool_choice, sessionId: session_id || `conv_${getConversationKey(messages as Array<{ role: string; content: unknown }>)}`, mode, systemPrompt: system_prompt };
+    const context = { messages, tools: tools || [], tool_choice, sessionId: session_id || `conv_${getConversationKey(messages as Array<{ role: string; content: unknown }>)}`, hasSessionId: !!session_id, mode, systemPrompt: system_prompt };
 
     const chatId = `chatcmpl-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -509,6 +509,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
       tool_choice: anthropicToolChoice,
       systemPrompt,
       sessionId: `conv_${getConversationKey(messages as Array<{ role: string; content: unknown }>, systemPrompt)}`,
+      hasSessionId: false,
     };
     const modelArg = { api: apiId, provider: apiId, id: model };
     const msgId = `msg_${Date.now().toString(36)}`;

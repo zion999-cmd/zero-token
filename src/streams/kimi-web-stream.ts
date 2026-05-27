@@ -77,8 +77,10 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
 
         console.log(`[KimiWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
-        // Reuse conversation session when available
-        const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
+        // Use explicit session_id if provided, otherwise use a single default session.
+        // Clients should NOT need to know about upstream session management - the gateway handles it.
+        const ctx = context as unknown as { sessionId?: string; hasSessionId?: boolean };
+        const sessionKey = ctx.hasSessionId ? (ctx.sessionId || "default") : "default";
         const cachedCid = sessionMap.get(sessionKey);
 
         const responseStream = await client.chatCompletions({
