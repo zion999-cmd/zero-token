@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
@@ -207,49 +206,39 @@ export class QwenWebClientBrowser {
   }
 
   /**
-   * Upload an image through a dedicated browser page and capture the file metadata
-   * from the Qwen file/record/add API response via CDP.
-   * Uses a separate page per upload and closes it afterward to prevent image
-   * accumulation that would trigger Qwen's "最多10张图片" limit.
+   * Upload an image through the browser page's file input.
+   * Uses the main page (no extra pages created) and clears uploaded images
+   * from the chat input after each upload to prevent the 10-image limit.
    */
   async uploadFile(
     fileBuffer: Buffer,
     fileName: string,
-    mimeType: string,
+    _mimeType: string,
   ): Promise<QwenFileMeta> {
-    const { browser } = await this.ensureBrowser();
+    const { page } = await this.ensureBrowser();
 
-    // Create a dedicated upload page so uploaded images don't pile up
-    // in any single chat window and hit Qwen's 10-image frontend limit.
-    const uploadPage = await browser.newPage();
+    // Write to temp file for setInputFiles
+    const ext = path.extname(fileName) || ".png";
+    const tmpPath = path.join("/tmp", `qwen-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+    await fs.writeFile(tmpPath, fileBuffer);
+
+    let cdpSession: any = null;
     try {
-      await uploadPage.goto(this.pageUrl, { waitUntil: "domcontentloaded" });
-      await new Promise((r) => setTimeout(r, 4000));
+      cdpSession = await page.context().newCDPSession(page);
+      await cdpSession.send("Network.enable");
 
-      const ext = path.extname(fileName) || ".png";
-      const tmpPath = path.join(os.tmpdir(), `qwen-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
-      await fs.writeFile(tmpPath, fileBuffer);
+      let resolveRecord: (data: { response: Record<string, unknown>; requestBody: Record<string, unknown> }) => void;
+      const recordPromise = new Promise<{ response: Record<string, unknown>; requestBody: Record<string, unknown> }>((resolve) => {
+        resolveRecord = resolve;
+      });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let cdpSession: any = null;
-      try {
-        cdpSession = await uploadPage.context().newCDPSession(uploadPage);
-        await cdpSession.send("Network.enable");
+      const requestBodyMap = new Map<string, Record<string, unknown>>();
 
-        let resolveFileRecord: (data: { response: Record<string, unknown>; requestBody: Record<string, unknown> }) => void;
-        const fileRecordPromise = new Promise<{ response: Record<string, unknown>; requestBody: Record<string, unknown> }>((resolve) => {
-          resolveFileRecord = resolve;
-        });
-
-        const requestBodyMap = new Map<string, Record<string, unknown>>();
-
-        cdpSession.on(
-          "Network.requestWillBeSent",
-          (params: { requestId: string; request: { url: string; postData?: string } }) => {
-            if (params.request.url.includes("file/record/add") && params.request.postData) {
-            try {
-              requestBodyMap.set(params.requestId, JSON.parse(params.request.postData));
-            } catch { /* ignore */ }
+      cdpSession.on(
+        "Network.requestWillBeSent",
+        (params: { requestId: string; request: { url: string; postData?: string } }) => {
+          if (params.request.url.includes("file/record/add") && params.request.postData) {
+            try { requestBodyMap.set(params.requestId, JSON.parse(params.request.postData)); } catch { /* ignore */ }
           }
         },
       );
@@ -265,14 +254,14 @@ export class QwenWebClientBrowser {
               })) as { body: string };
               const json = JSON.parse(body.body) as Record<string, unknown>;
               if (json?.data && reqBody) {
-                resolveFileRecord({ response: json, requestBody: reqBody });
+                resolveRecord({ response: json, requestBody: reqBody });
               }
             } catch { /* ignore */ }
           }
         },
       );
 
-      const fileInput = await uploadPage.$(
+      const fileInput = await page.$(
         'input[type="file"][accept*=".png"], input[type="file"][accept*="image"]',
       );
       if (!fileInput) {
@@ -283,7 +272,7 @@ export class QwenWebClientBrowser {
 
       const timeoutMs = 60_000;
       const result = await Promise.race([
-        fileRecordPromise,
+        recordPromise,
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("File upload timed out")), timeoutMs),
         ),
@@ -305,18 +294,23 @@ export class QwenWebClientBrowser {
         batchId: (data.batchId as string) || "",
         fileName,
         fileSize: fileBuffer.length,
-        fileType: mimeType.startsWith("image/") ? "image" : "file",
+        fileType: "image",
         url,
       };
-      } finally {
-        if (cdpSession) {
-          await cdpSession.send("Network.disable").catch(() => {});
-        }
-        await fs.unlink(tmpPath).catch(() => {});
-      }
     } finally {
-      // Close the upload page to prevent abandoned chat windows piling up
-      await uploadPage.close().catch(() => {});
+      if (cdpSession) {
+        await cdpSession.send("Network.disable").catch(() => {});
+      }
+      await fs.unlink(tmpPath).catch(() => {});
+      // Clear uploaded images from the chat input to prevent 10-image limit
+      await page.evaluate(() => {
+        const input = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+        if (input) input.value = "";
+        // Click any visible close/remove buttons on image previews
+        document.querySelectorAll('[class*="close"], [class*="remove"], [class*="delete"], [class*="clear"]').forEach((el) => {
+          (el as HTMLElement).click();
+        });
+      }).catch(() => {});
     }
   }
 
@@ -357,7 +351,6 @@ export class QwenWebClientBrowser {
     const apiMessages: Array<Record<string, unknown>> = [];
 
     if (hasFiles) {
-      // Send image message with resource URLs
       apiMessages.push({
         mime_type: "image/url",
         content: "",
