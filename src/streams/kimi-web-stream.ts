@@ -77,12 +77,12 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
 
         console.log(`[KimiWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
-        // Image requests share a single default session to avoid creating one per frame.
+        // Image requests share a default session per model to avoid creating one per frame.
         // Text-only requests use the context sessionId (auto-derived or explicit).
         const ctx = context as unknown as { sessionId?: string; hasSessionId?: boolean };
         const hasImages = imageUrls.length > 0;
         const sessionKey = hasImages
-          ? (ctx.hasSessionId ? (ctx.sessionId || "image-default") : "image-default")
+          ? (ctx.hasSessionId ? ctx.sessionId! : `img:${model.api}`)
           : (ctx.sessionId || "default");
         const cachedCid = sessionMap.get(sessionKey);
 
