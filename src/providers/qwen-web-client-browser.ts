@@ -207,41 +207,46 @@ export class QwenWebClientBrowser {
   }
 
   /**
-   * Upload an image through the browser page and capture the file metadata
+   * Upload an image through a dedicated browser page and capture the file metadata
    * from the Qwen file/record/add API response via CDP.
+   * Uses a separate page per upload and closes it afterward to prevent image
+   * accumulation that would trigger Qwen's "最多10张图片" limit.
    */
   async uploadFile(
     fileBuffer: Buffer,
     fileName: string,
     mimeType: string,
   ): Promise<QwenFileMeta> {
-    const { page } = await this.ensureBrowser();
+    const { browser } = await this.ensureBrowser();
 
-    // Reload to ensure React event handlers are attached
-    await page.goto(this.pageUrl, { waitUntil: "domcontentloaded" });
-    await new Promise((r) => setTimeout(r, 4000));
-
-    const ext = path.extname(fileName) || ".png";
-    const tmpPath = path.join(os.tmpdir(), `qwen-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
-    await fs.writeFile(tmpPath, fileBuffer);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let cdpSession: any = null;
+    // Create a dedicated upload page so uploaded images don't pile up
+    // in any single chat window and hit Qwen's 10-image frontend limit.
+    const uploadPage = await browser.newPage();
     try {
-      cdpSession = await page.context().newCDPSession(page);
-      await cdpSession.send("Network.enable");
+      await uploadPage.goto(this.pageUrl, { waitUntil: "domcontentloaded" });
+      await new Promise((r) => setTimeout(r, 4000));
 
-      let resolveFileRecord: (data: { response: Record<string, unknown>; requestBody: Record<string, unknown> }) => void;
-      const fileRecordPromise = new Promise<{ response: Record<string, unknown>; requestBody: Record<string, unknown> }>((resolve) => {
-        resolveFileRecord = resolve;
-      });
+      const ext = path.extname(fileName) || ".png";
+      const tmpPath = path.join(os.tmpdir(), `qwen-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+      await fs.writeFile(tmpPath, fileBuffer);
 
-      const requestBodyMap = new Map<string, Record<string, unknown>>();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let cdpSession: any = null;
+      try {
+        cdpSession = await uploadPage.context().newCDPSession(uploadPage);
+        await cdpSession.send("Network.enable");
 
-      cdpSession.on(
-        "Network.requestWillBeSent",
-        (params: { requestId: string; request: { url: string; postData?: string } }) => {
-          if (params.request.url.includes("file/record/add") && params.request.postData) {
+        let resolveFileRecord: (data: { response: Record<string, unknown>; requestBody: Record<string, unknown> }) => void;
+        const fileRecordPromise = new Promise<{ response: Record<string, unknown>; requestBody: Record<string, unknown> }>((resolve) => {
+          resolveFileRecord = resolve;
+        });
+
+        const requestBodyMap = new Map<string, Record<string, unknown>>();
+
+        cdpSession.on(
+          "Network.requestWillBeSent",
+          (params: { requestId: string; request: { url: string; postData?: string } }) => {
+            if (params.request.url.includes("file/record/add") && params.request.postData) {
             try {
               requestBodyMap.set(params.requestId, JSON.parse(params.request.postData));
             } catch { /* ignore */ }
@@ -267,7 +272,7 @@ export class QwenWebClientBrowser {
         },
       );
 
-      const fileInput = await page.$(
+      const fileInput = await uploadPage.$(
         'input[type="file"][accept*=".png"], input[type="file"][accept*="image"]',
       );
       if (!fileInput) {
@@ -303,11 +308,15 @@ export class QwenWebClientBrowser {
         fileType: mimeType.startsWith("image/") ? "image" : "file",
         url,
       };
-    } finally {
-      if (cdpSession) {
-        await cdpSession.send("Network.disable").catch(() => {});
+      } finally {
+        if (cdpSession) {
+          await cdpSession.send("Network.disable").catch(() => {});
+        }
+        await fs.unlink(tmpPath).catch(() => {});
       }
-      await fs.unlink(tmpPath).catch(() => {});
+    } finally {
+      // Close the upload page to prevent abandoned chat windows piling up
+      await uploadPage.close().catch(() => {});
     }
   }
 
