@@ -84,10 +84,10 @@ const PROVIDERS: WebProvider[] = [
   },
   {
     id: "qwen-web",
-    name: "Qwen",
+    name: "Qwen CN",
     url: "https://www.qianwen.com/chat/",
-    authCookieNames: ["cna", "athena_session", "login_session"],
-    extraCookieNames: ["__ssid"],
+    authCookieNames: ["tongyi_sso_ticket", "cna"],
+    extraCookieNames: ["XSRF-TOKEN", "b-user-id"],
   },
   {
     id: "glm-web",
@@ -119,8 +119,8 @@ const PROVIDERS: WebProvider[] = [
     id: "qwen-intl-web",
     name: "Qwen International",
     url: "https://chat.qwen.ai",
-    authCookieNames: ["tongyi_sso_ticket", "login_aliyunid_ticket"],
-    extraCookieNames: ["XSRF-TOKEN", "b-user-id"],
+    authCookieNames: ["token", "atpsida"],
+    extraCookieNames: ["XSRF-TOKEN", "b-user-id", "aui"],
   },
   {
     id: "glm-intl-web",

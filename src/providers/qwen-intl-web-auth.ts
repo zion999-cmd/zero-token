@@ -1,6 +1,6 @@
 import { chromium } from "playwright-core";
 
-export interface QwenCNWebAuthResult {
+export interface QwenIntlWebAuthResult {
   cookies: Array<{
     name: string;
     value: string;
@@ -16,10 +16,10 @@ export interface QwenCNWebAuthResult {
   ut?: string;
 }
 
-export async function loginQwenCNWeb(params: {
+export async function loginQwenIntlWeb(params: {
   onProgress: (msg: string) => void;
   openUrl: (url: string) => Promise<boolean>;
-}): Promise<QwenCNWebAuthResult> {
+}): Promise<QwenIntlWebAuthResult> {
   const { onProgress } = params;
 
   onProgress("Connecting to Chrome debug port...");
@@ -35,7 +35,7 @@ export async function loginQwenCNWeb(params: {
     browser = await chromium.connectOverCDP(wsUrl);
     const context = browser.contexts()[0];
 
-    onProgress("Opening Qwen CN (chat.qwen.ai)...");
+    onProgress("Opening Qwen Intl (chat.qwen.ai)...");
 
     let page = context.pages().find((p) => p.url().includes("qwen.ai"));
     if (!page) {
@@ -44,14 +44,14 @@ export async function loginQwenCNWeb(params: {
     }
 
     // If already logged in, capture cookies and verify API access
-    let capturedCookies: QwenCNWebAuthResult["cookies"] = [];
+    let capturedCookies: QwenIntlWebAuthResult["cookies"] = [];
     let xsrfToken = "";
     let ut = "";
 
     // Check if already logged in
     const initialCookies = await context.cookies();
     const sessionCookie = initialCookies.find(
-      (c) => c.name === "tongyi_sso_ticket" || c.name === "login_aliyunid_ticket",
+      (c) => c.name === "token" || c.name === "atpsida",
     );
 
     if (sessionCookie) {
@@ -117,7 +117,7 @@ export async function loginQwenCNWeb(params: {
           onProgress("API signature test skipped (cookies captured).");
         }
       } catch (e) {
-        console.log("[Qwen CN Auth] API test failed:", e);
+        console.log("[Qwen Intl Auth] API test failed:", e);
       }
     }
 
@@ -130,7 +130,7 @@ export async function loginQwenCNWeb(params: {
 
         const cookies = await context.cookies();
         const newSessionCookie = cookies.find(
-          (c) => c.name === "tongyi_sso_ticket" || c.name === "login_aliyunid_ticket",
+          (c) => c.name === "token" || c.name === "atpsida",
         );
 
         if (newSessionCookie) {
@@ -195,7 +195,7 @@ export async function loginQwenCNWeb(params: {
               onProgress("Login detected. API signature test skipped (cookies captured).");
             }
           } catch (e) {
-            console.log("[Qwen CN Auth] API test failed:", e);
+            console.log("[Qwen Intl Auth] API test failed:", e);
           }
 
           break;
