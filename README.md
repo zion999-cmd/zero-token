@@ -15,6 +15,7 @@
 | Kimi | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 Node.js 直传 |
 | ChatGLM | ✅ | ✅ | — | 浏览器客户端 (attach) |
 | Qwen 国内版 | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 CDP 上传至 OSS |
+| Qwen 国际版 | ✅ | ✅ | — | 浏览器客户端 (page.evaluate), chat.qwen.ai |
 | Grok | ✅ | ⚠️ | — | DOM 交互 (anti-bot 绕过) |
 | Doubao | ✅ | ⚠️ | — | 浏览器客户端 (间歇可用) |
 | ChatGPT | ⚠️ | — | — | 需先登录 |
@@ -239,7 +240,7 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 
 ### 多模态输入 (图片识别)
 
-Kimi 和 Qwen 国内版支持 OpenAI Vision API 格式的图片输入：
+Kimi 和 Qwen 国内版支持 OpenAI Vision API 格式的图片输入（Qwen 国际版暂不支持）：
 
 ```bash
 curl -X POST http://127.0.0.1:3001/v1/chat/completions \
@@ -265,7 +266,7 @@ curl -X POST http://127.0.0.1:3001/v1/chat/completions \
 
 | 供应商 | 策略 | 说明 |
 |--------|------|------|
-| DeepSeek/Kimi/GLM/Qwen | `<tool_call>` XML | Hermes 风格，模型原生支持 |
+| DeepSeek/Kimi/GLM/Qwen/Qwen Intl | `<tool_call>` XML | Hermes 风格，模型原生支持 |
 | Grok/Claude | `function_call` JSON | OpenAI 兼容格式 |
 | Doubao | `<tool_call>` XML | 间歇可用 |
 
@@ -376,6 +377,7 @@ Claude Code / OpenAI SDK
         │   │   └─ 支持 </ToolName> 关闭标签（DS 有时省略 </tool_call>）
         │   ├─ Claude   → 浏览器内 fetch (绕过 Cloudflare)
         │   ├─ Kimi/GLM/Qwen/Doubao → 浏览器 CDP attach
+│   ├─ Qwen Intl → 浏览器 page.evaluate (chat.qwen.ai)
         │   └─ Grok     → DOM 交互 (绕过 anti-bot)
         ↓ 工具调用解析（流式 inline + done 后 fallback）
             支持格式：
