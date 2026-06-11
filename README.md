@@ -15,7 +15,7 @@
 | Kimi | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 Node.js 直传 |
 | ChatGLM | ✅ | ✅ | — | 浏览器客户端 (attach) |
 | Qwen 国内版 | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 CDP 上传至 OSS |
-| Qwen 国际版 | ✅ | ✅ | — | 浏览器客户端 (page.evaluate), chat.qwen.ai |
+| Qwen 国际版 | ✅ | ✅ | ⚠️ | 浏览器客户端 (page.evaluate), chat.qwen.ai, 文件上传可用，chat 端图片格式待适配 |
 | Grok | ✅ | ⚠️ | — | DOM 交互 (anti-bot 绕过) |
 | Doubao | ✅ | ⚠️ | — | 浏览器客户端 (间歇可用) |
 | ChatGPT | ⚠️ | — | — | 需先登录 |
