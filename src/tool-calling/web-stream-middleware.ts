@@ -260,7 +260,7 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // or entering suggestion mode (predicting the next user message).
     // CN models need Chinese instructions — English instructions are often ignored.
     const isCnModel = api === "kimi-web" || api === "glm-web" || api === "glm-intl-web"
-      || api === "qwen-cn-web" || api === "deepseek-web" || api === "xiaomimo-web";
+      || api === "qwen-intl-web" || api === "deepseek-web" || api === "xiaomimo-web";
     const continuationHint = endsWithToolResult
       ? (isCnModel
         ? `\n\n[指令]: 工具已执行，结果见上。如任务未完成，只输出下一个工具调用XML，禁止任何解释文字。如已全部完成，用简洁文字总结成果。禁止重复刚执行过的工具。`

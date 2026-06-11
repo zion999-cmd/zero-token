@@ -40,7 +40,7 @@ export interface QwenWebClientOptions {
 
 /**
  * Qwen Web Client using Playwright browser context.
- * International version: page at www.qianwen.com/chat/, API at chat2.qianwen.com.
+ * Domestic CN version: page at www.qianwen.com/chat/, API at chat2.qianwen.com.
  */
 export class QwenWebClientBrowser {
   private sessionToken: string;

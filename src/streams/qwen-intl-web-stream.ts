@@ -7,22 +7,22 @@ import {
   type ToolCall,
 } from "@mariozechner/pi-ai";
 import {
-  QwenCNWebClientBrowser,
-  type QwenCNWebClientOptions,
-} from "../providers/qwen-cn-web-client-browser.js";
+  QwenIntlWebClientBrowser,
+  type QwenIntlWebClientOptions,
+} from "../providers/qwen-intl-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
 
 const sessionMap = new Map<string, string>();
 
-export function createQwenCNWebStreamFn(cookieOrJson: string): StreamFn {
-  let options: QwenCNWebClientOptions;
+export function createQwenIntlWebStreamFn(cookieOrJson: string): StreamFn {
+  let options: QwenIntlWebClientOptions;
   try {
     const parsed = JSON.parse(cookieOrJson);
     options = parsed;
   } catch {
     options = { cookie: cookieOrJson, xsrfToken: "" };
   }
-  const client = new QwenCNWebClientBrowser(options);
+  const client = new QwenIntlWebClientBrowser(options);
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
@@ -36,7 +36,7 @@ export function createQwenCNWebStreamFn(cookieOrJson: string): StreamFn {
 
         const messages = context.messages || [];
 
-        // Qwen CN web uses DOM simulation — only send the last user message.
+        // Qwen Intl web uses DOM simulation — only send the last user message.
         // System prompts, tools, and full history would overwhelm the input.
         let prompt = "";
         const lastUserMessage = [...messages].toReversed().find((m) => m.role === "user");
@@ -56,9 +56,9 @@ export function createQwenCNWebStreamFn(cookieOrJson: string): StreamFn {
           throw new Error("No message found to send to Qwen API");
         }
 
-        console.log(`[QwenCNWebStream] Starting run for session: ${sessionKey}`);
-        console.log(`[QwenCNWebStream] Conversation ID: ${sessionId || "new"}`);
-        console.log(`[QwenCNWebStream] Prompt length: ${prompt.length}`);
+        console.log(`[QwenIntlWebStream] Starting run for session: ${sessionKey}`);
+        console.log(`[QwenIntlWebStream] Conversation ID: ${sessionId || "new"}`);
+        console.log(`[QwenIntlWebStream] Prompt length: ${prompt.length}`);
 
         const responseStream = await client.chatCompletions({
           sessionId,
@@ -345,16 +345,16 @@ export function createQwenCNWebStreamFn(cookieOrJson: string): StreamFn {
             }
 
             // Extract content delta - Qwen v2 uses choices[0].delta.content
-            // Qwen CN Web returns different structure
+            // Qwen Intl Web returns different structure
             console.log(
-              `[QwenCNWebStream] Debug data.data: ${JSON.stringify(data.data)?.substring(0, 200)}`,
+              `[QwenIntlWebStream] Debug data.data: ${JSON.stringify(data.data)?.substring(0, 200)}`,
             );
             console.log(
-              `[QwenCNWebStream] Debug data.communication: ${JSON.stringify(data.communication)?.substring(0, 200)}`,
+              `[QwenIntlWebStream] Debug data.communication: ${JSON.stringify(data.communication)?.substring(0, 200)}`,
             );
 
             let delta = "";
-            // Qwen CN Web specific extraction
+            // Qwen Intl Web specific extraction
             if (data.data?.messages && Array.isArray(data.data.messages)) {
               // Find the last message with content field (likely assistant response)
               for (let i = data.data.messages.length - 1; i >= 0; i--) {
@@ -362,7 +362,7 @@ export function createQwenCNWebStreamFn(cookieOrJson: string): StreamFn {
                 if (msg.content && typeof msg.content === "string") {
                   delta = msg.content;
                   console.log(
-                    `[QwenCNWebStream] Extracted content from messages[${i}], length: ${delta.length}`,
+                    `[QwenIntlWebStream] Extracted content from messages[${i}], length: ${delta.length}`,
                   );
                   break;
                 }
@@ -383,7 +383,7 @@ export function createQwenCNWebStreamFn(cookieOrJson: string): StreamFn {
               }
             }
             if (typeof delta === "string" && delta) {
-              // Qwen CN sends accumulated content (not incremental deltas).
+              // Qwen Intl sends accumulated content (not incremental deltas).
               // Only emit the new portion to avoid repetition.
               if (
                 delta.length > lastExtractedContent.length &&
@@ -436,7 +436,7 @@ export function createQwenCNWebStreamFn(cookieOrJson: string): StreamFn {
         }
 
         console.log(
-          `[QwenCNWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}`,
+          `[QwenIntlWebStream] Stream completed. Parts: ${contentParts.length}, Tools: ${accumulatedToolCalls.length}`,
         );
 
         stream.push({

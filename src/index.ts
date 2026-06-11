@@ -170,7 +170,7 @@ app.get('/v1/models', (_req: Request, res: Response) => {
     'doubao-web': 'doubao-chat',
     'chatgpt-web': 'chatgpt-chat',
     'qwen-web': 'qwen-chat',
-    'qwen-cn-web': 'qwen-cn-chat',
+    'qwen-intl-web': 'qwen-intl-chat',
     'kimi-web': 'kimi-chat',
     'gemini-web': 'gemini-chat',
     'grok-web': 'grok-chat',

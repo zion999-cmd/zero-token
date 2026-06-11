@@ -14,7 +14,7 @@ import {
 import { loadConfig } from "../../config/io.js";
 import type { ModelDefinitionConfig } from "../../config/types.models.js";
 
-export interface QwenCNWebClientOptions {
+export interface QwenIntlWebClientOptions {
   cookie: string;
   xsrfToken: string;
   userAgent?: string;
@@ -23,9 +23,9 @@ export interface QwenCNWebClientOptions {
 }
 
 /**
- * Qwen CN Web Client (qwen.ai 国内版) using Playwright browser context
+ * Qwen International Web Client (chat.qwen.ai) using Playwright browser context
  */
-export class QwenCNWebClientBrowser {
+export class QwenIntlWebClientBrowser {
   private cookie: string;
   private xsrfToken: string;
   private userAgent: string;
@@ -36,8 +36,8 @@ export class QwenCNWebClientBrowser {
   private page: Page | null = null;
   private running: RunningChrome | null = null;
 
-  constructor(options: QwenCNWebClientOptions | string) {
-    let finalOptions: QwenCNWebClientOptions;
+  constructor(options: QwenIntlWebClientOptions | string) {
+    let finalOptions: QwenIntlWebClientOptions;
     if (typeof options === "string") {
       try {
         finalOptions = JSON.parse(options);
@@ -86,7 +86,7 @@ export class QwenCNWebClientBrowser {
     }
 
     if (browserConfig.attachOnly) {
-      console.log(`[Qwen CN Web Browser] Connecting to existing Chrome at ${profile.cdpUrl}`);
+      console.log(`[Qwen Intl Web Browser] Connecting to existing Chrome at ${profile.cdpUrl}`);
 
       let wsUrl: string | null = null;
       for (let i = 0; i < 10; i++) {
@@ -117,15 +117,15 @@ export class QwenCNWebClientBrowser {
       let qwenPage = pages.find((p) => p.url().includes("qwen.ai"));
 
       if (qwenPage) {
-        console.log(`[Qwen CN Web Browser] Found existing Qwen CN page`);
+        console.log(`[Qwen Intl Web Browser] Found existing Qwen Intl page`);
         this.page = qwenPage;
       } else {
-        console.log(`[Qwen CN Web Browser] Creating new page`);
+        console.log(`[Qwen Intl Web Browser] Creating new page`);
         this.page = await ctx.newPage();
         await this.page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
       }
 
-      console.log(`[Qwen CN Web Browser] Connected successfully`);
+      console.log(`[Qwen Intl Web Browser] Connected successfully`);
     } else {
       this.running = await launchOpenClawChrome(browserConfig, profile);
 
@@ -180,7 +180,7 @@ export class QwenCNWebClientBrowser {
         await browserForCookies.addCookies(cookies);
       } catch (err) {
         console.warn(
-          `[Qwen CN Web Browser] addCookies failed (page may already have session): ${err instanceof Error ? err.message : String(err)}`,
+          `[Qwen Intl Web Browser] addCookies failed (page may already have session): ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -206,9 +206,9 @@ export class QwenCNWebClientBrowser {
       params.sessionId ||
       Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
 
-    console.log(`[Qwen CN Web Browser] Sending message`);
-    console.log(`[Qwen CN Web Browser] Model: ${model}`);
-    console.log(`[Qwen CN Web Browser] Session ID: ${sessionId}`);
+    console.log(`[Qwen Intl Web Browser] Sending message`);
+    console.log(`[Qwen Intl Web Browser] Model: ${model}`);
+    console.log(`[Qwen Intl Web Browser] Session ID: ${sessionId}`);
 
     const timestamp = Date.now();
     const nonce = Math.random().toString(36).slice(2);
@@ -312,16 +312,16 @@ export class QwenCNWebClientBrowser {
       },
     );
     console.log(
-      `[Qwen CN Web Browser] Response data: ok=${responseData?.ok}, status=${responseData?.status}, data length=${responseData?.data?.length}`,
+      `[Qwen Intl Web Browser] Response data: ok=${responseData?.ok}, status=${responseData?.status}, data length=${responseData?.data?.length}`,
     );
     if (responseData?.data && responseData.data.length > 0) {
       console.log(
-        `[Qwen CN Web Browser] Response preview: ${responseData.data.substring(0, 200)}...`,
+        `[Qwen Intl Web Browser] Response preview: ${responseData.data.substring(0, 200)}...`,
       );
     }
     if (!responseData || !responseData.ok) {
       throw new Error(
-        `Qwen CN API error: ${responseData?.status || "unknown"} - ${responseData?.error || "Request failed"}`,
+        `Qwen Intl API error: ${responseData?.status || "unknown"} - ${responseData?.error || "Request failed"}`,
       );
     }
 
@@ -349,8 +349,8 @@ export class QwenCNWebClientBrowser {
     return [
       {
         id: "Qwen3.5-Plus",
-        name: "Qwen 3.5 Plus (国内版)",
-        api: "qwen-cn-web",
+        name: "Qwen 3.5 Plus (International)",
+        api: "qwen-intl-web",
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -359,8 +359,8 @@ export class QwenCNWebClientBrowser {
       },
       {
         id: "Qwen3.5-Turbo",
-        name: "Qwen 3.5 Turbo (国内版)",
-        api: "qwen-cn-web",
+        name: "Qwen 3.5 Turbo (International)",
+        api: "qwen-intl-web",
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

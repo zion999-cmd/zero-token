@@ -60,7 +60,7 @@ const EXCLUDED_MODELS = new Set(["perplexity-web", "doubao-web"]);
 const CN_MODELS = new Set([
   "deepseek-web",
   "doubao-web",
-  "qwen-cn-web",
+  "qwen-intl-web",
   "kimi-web",
   "glm-web",
   "xiaomimo-web",
@@ -99,7 +99,7 @@ const STRATEGY: Record<string, PromptStrategy> = {
   "glm-web": "tool_json",
   "glm-intl-web": "tool_json",
   "qwen-web": "tool_json",
-  "qwen-cn-web": "tool_json",
+  "qwen-intl-web": "tool_json",
   "grok-web": "function_call",
   "doubao-web": "tool_json",
   "chatgpt-web": "function_call",

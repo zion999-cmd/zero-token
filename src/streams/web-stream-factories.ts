@@ -7,7 +7,7 @@ const WEB_STREAM_API_IDS = [
   "doubao-web",
   "chatgpt-web",
   "qwen-web",
-  "qwen-cn-web",
+  "qwen-intl-web",
   "kimi-web",
   "gemini-web",
   "grok-web",
@@ -43,9 +43,9 @@ async function loadStreamFactory(
       const mod = await import("./qwen-web-stream.js");
       return mod.createQwenWebStreamFn;
     }
-    case "qwen-cn-web": {
-      const mod = await import("./qwen-cn-web-stream.js");
-      return mod.createQwenCNWebStreamFn;
+    case "qwen-intl-web": {
+      const mod = await import("./qwen-intl-web-stream.js");
+      return mod.createQwenIntlWebStreamFn;
     }
     case "kimi-web": {
       const mod = await import("./kimi-web-stream.js");

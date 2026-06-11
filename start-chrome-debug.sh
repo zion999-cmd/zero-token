@@ -42,8 +42,8 @@ for i in $(seq 1 15); do
       "https://www.kimi.com"
       "https://chatglm.cn"
       "https://grok.com"
-      "https://www.qianwen.com/chat/"
-      "https://chat.qwen.ai"
+      "https://www.qianwen.com/chat/"   # Qwen CN (domestic)
+      "https://chat.qwen.ai"           # Qwen Intl (international)
       "https://www.doubao.com/chat/"
       "https://www.perplexity.ai"
       "https://gemini.google.com/app"

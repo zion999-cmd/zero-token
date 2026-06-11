@@ -116,8 +116,8 @@ const PROVIDERS: WebProvider[] = [
     authCookieNames: ["token", "session", "auth", "user"],
   },
   {
-    id: "qwen-cn-web",
-    name: "Qwen CN (阿里国内)",
+    id: "qwen-intl-web",
+    name: "Qwen International",
     url: "https://chat.qwen.ai",
     authCookieNames: ["tongyi_sso_ticket", "login_aliyunid_ticket"],
     extraCookieNames: ["XSRF-TOKEN", "b-user-id"],
