@@ -192,23 +192,75 @@ export class QwenIntlWebClientBrowser {
     await this.ensureBrowser();
   }
 
+  /**
+   * Upload a file to chat.qwen.ai via direct HTTP (no browser needed).
+   * Returns the file metadata for inclusion in chat messages.
+   */
+  async uploadFile(
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+  ): Promise<{ id: string; url: string }> {
+    const { browser } = await this.ensureBrowser();
+    const cookies = await browser.cookies();
+    const cookieStr = cookies
+      .filter((c) => c.domain.includes("qwen.ai"))
+      .map((c) => `${c.name}=${c.value}`)
+      .join("; ");
+
+    const fd = new FormData();
+    fd.append("file", new Blob([new Uint8Array(fileBuffer)], { type: mimeType }), fileName);
+
+    const headers: Record<string, string> = {
+      Cookie: cookieStr,
+      Origin: this.baseUrl,
+      Referer: `${this.baseUrl}/`,
+    };
+    if (this.xsrfToken) headers["X-XSRF-TOKEN"] = this.xsrfToken;
+
+    // Also try to get bearer token from page localStorage for auth
+    try {
+      const { page } = await this.ensureBrowser();
+      const token = await page.evaluate(() => localStorage.getItem("token"));
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+    } catch { /* ok */ }
+
+    const res = await fetch(`${this.baseUrl}/api/v1/files/`, {
+      method: "POST",
+      headers,
+      body: fd,
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`File upload failed: ${res.status} - ${errText.slice(0, 200)}`);
+    }
+    const data = (await res.json()) as { id: string };
+    if (!data.id) throw new Error("File upload: no id in response");
+
+    return {
+      id: data.id,
+      url: `${this.baseUrl}/api/v1/files/${data.id}/content`,
+    };
+  }
+
   async chatCompletions(params: {
     sessionId?: string;
     message: string;
     model?: string;
     parentMessageId?: string;
     signal?: AbortSignal;
+    fileMetas?: Array<{ url: string }>;
   }): Promise<ReadableStream<Uint8Array>> {
     const { page } = await this.ensureBrowser();
 
     const model = params.model || "Qwen3.5-Plus";
+    const fileMetas = params.fileMetas || [];
+    const hasFiles = fileMetas.length > 0;
     const sessionId =
       params.sessionId ||
       Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
 
-    console.log(`[Qwen Intl Web Browser] Sending message`);
-    console.log(`[Qwen Intl Web Browser] Model: ${model}`);
-    console.log(`[Qwen Intl Web Browser] Session ID: ${sessionId}`);
+    console.log(`[Qwen Intl Web Browser] Sending message (model: ${model}, session: ${sessionId.slice(0, 8)}..., files: ${fileMetas.length})`);
 
     const timestamp = Date.now();
     const nonce = Math.random().toString(36).slice(2);
@@ -219,6 +271,8 @@ export class QwenIntlWebClientBrowser {
         sessionId,
         model,
         message,
+        hasFiles,
+        fileMetas,
         parentMessageId,
         ut,
         xsrfToken,
@@ -229,17 +283,23 @@ export class QwenIntlWebClientBrowser {
         try {
           const url = `${baseUrl}/api/v2/chat?biz_id=ai_qwen&chat_client=h5&device=pc&fr=pc&pr=qwen&nonce=${nonce}&timestamp=${timestamp}&ut=${ut}`;
 
+          const apiMessages: Array<Record<string, unknown>> = [];
+          if (hasFiles) {
+            apiMessages.push({
+              mime_type: "image/url",
+              content: "",
+              meta_data: { resource_infos: fileMetas.map((f) => ({ url: f.url })) },
+            });
+          }
+          apiMessages.push({
+            content: message,
+            mime_type: "text/plain",
+            meta_data: { ori_query: message },
+          });
+
           const bodyObj: Record<string, unknown> = {
             model: model,
-            messages: [
-              {
-                content: message,
-                mime_type: "text/plain",
-                meta_data: {
-                  ori_query: message,
-                },
-              },
-            ],
+            messages: apiMessages,
             session_id: sessionId,
             parent_req_id: parentMessageId || "0",
             deep_search: "0",
@@ -303,6 +363,8 @@ export class QwenIntlWebClientBrowser {
         sessionId,
         model,
         message: params.message,
+        hasFiles,
+        fileMetas,
         parentMessageId: params.parentMessageId,
         ut: this.ut,
         xsrfToken: this.xsrfToken,
@@ -352,7 +414,7 @@ export class QwenIntlWebClientBrowser {
         name: "Qwen 3.5 Plus (International)",
         api: "qwen-intl-web",
         reasoning: false,
-        input: ["text"],
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128000,
         maxTokens: 4096,
@@ -362,7 +424,7 @@ export class QwenIntlWebClientBrowser {
         name: "Qwen 3.5 Turbo (International)",
         api: "qwen-intl-web",
         reasoning: false,
-        input: ["text"],
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 32768,
         maxTokens: 4096,

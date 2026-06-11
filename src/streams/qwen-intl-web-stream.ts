@@ -39,32 +39,55 @@ export function createQwenIntlWebStreamFn(cookieOrJson: string): StreamFn {
         // Qwen Intl web uses DOM simulation — only send the last user message.
         // System prompts, tools, and full history would overwhelm the input.
         let prompt = "";
+        const imageUrls: Array<{ url: string; mimeType: string }> = [];
         const lastUserMessage = [...messages].toReversed().find((m) => m.role === "user");
         if (lastUserMessage) {
           if (typeof lastUserMessage.content === "string") {
             prompt = lastUserMessage.content;
           } else if (Array.isArray(lastUserMessage.content)) {
-            prompt = (lastUserMessage.content as TextContent[])
-              .filter((part) => part.type === "text")
-              .map((part) => part.text)
-              .join("");
+            const parts = lastUserMessage.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+            for (const part of parts) {
+              if (part.type === "text" && part.text) {
+                prompt += part.text;
+              } else if (part.type === "image_url" && part.image_url?.url) {
+                const url = part.image_url.url;
+                const mimeMatch = url.match(/^data:([^;]+);/);
+                imageUrls.push({ url, mimeType: mimeMatch?.[1] || "image/png" });
+              }
+            }
           }
         }
 
         prompt = stripInboundMeta(prompt);
-        if (!prompt) {
+        if (!prompt && imageUrls.length === 0) {
           throw new Error("No message found to send to Qwen API");
         }
 
+        // Upload images via HTTP (no browser page needed)
+        const fileMetas: Array<{ url: string }> = [];
+        for (const img of imageUrls) {
+          if (img.url.startsWith("data:")) {
+            const base64 = img.url.split(",")[1];
+            if (base64) {
+              const buffer = Buffer.from(base64, "base64");
+              const ext = img.mimeType.split("/")[1] || "png";
+              console.log(`[QwenIntlWebStream] Uploading image (${buffer.length} bytes, ${img.mimeType})...`);
+              const meta = await client.uploadFile(buffer, `image.${ext}`, img.mimeType);
+              fileMetas.push({ url: meta.url });
+              console.log(`[QwenIntlWebStream] Image uploaded: id=${meta.id}`);
+            }
+          }
+        }
+
         console.log(`[QwenIntlWebStream] Starting run for session: ${sessionKey}`);
-        console.log(`[QwenIntlWebStream] Conversation ID: ${sessionId || "new"}`);
-        console.log(`[QwenIntlWebStream] Prompt length: ${prompt.length}`);
+        console.log(`[QwenIntlWebStream] Prompt length: ${prompt.length}, Files: ${fileMetas.length}`);
 
         const responseStream = await client.chatCompletions({
           sessionId,
           message: prompt,
           model: model.id,
           signal: streamOptions?.signal,
+          fileMetas: fileMetas.length > 0 ? fileMetas : undefined,
         });
 
         if (!responseStream) {
