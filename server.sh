@@ -3,6 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/lib/chrome.sh"
+
 PID_FILE="$SCRIPT_DIR/.gateway.pid"
 LOG_FILE="$SCRIPT_DIR/.gateway.log"
 PORT="${MYZT_PORT:-3001}"
@@ -15,6 +17,13 @@ cmd_start() {
     echo "✓ Gateway 已在运行 (PID $(cat "$PID_FILE"), port $PORT)"
     echo "  http://$HOST:$PORT"
     return 0
+  fi
+
+  # 提示 Chrome 状态
+  if ! is_cdp_ready; then
+    echo "⚠ Chrome 调试模式未启动——需要 Chrome 的模型 (Qwen/Kimi/GLM) 将不可用"
+    echo "  启动 Chrome: ./start-chrome-debug.sh"
+    echo ""
   fi
 
   # 占用端口则清理
@@ -65,9 +74,31 @@ cmd_stop() {
 cmd_restart() { cmd_stop; sleep 0.5; cmd_start; }
 
 cmd_status() {
+  # Gateway 状态
   if is_running; then
     echo "✓ Gateway 运行中 (PID $(cat "$PID_FILE"), port $PORT)"
     echo "  地址: http://$HOST:$PORT"
+  else
+    echo "✗ Gateway 未运行"
+    [ -f "$LOG_FILE" ] && echo "" && echo "最近日志:" && tail -5 "$LOG_FILE" | sed 's/^/  /'
+  fi
+
+  # Chrome CDP 状态
+  echo ""
+  if is_cdp_ready; then
+    echo "✓ Chrome 调试模式: ${CDP_URL}"
+    echo "  (Qwen/Kimi/GLM 等需要浏览器的模型可用)"
+  else
+    echo "✗ Chrome 调试模式不可达 (${CDP_URL})"
+    if is_debug_chrome_running; then
+      echo "  Chrome 进程存在但 CDP 端口不对——检查 \${MYZT_CDP_PORT}"
+    else
+      echo "  运行 ./start-chrome-debug.sh 启动"
+    fi
+  fi
+
+  # 模型列表
+  if is_running; then
     echo ""
     echo "可用模型:"
     API_KEY_VAL=$(python3 -c "import json; d=json.load(open('$SCRIPT_DIR/config/config.json')); print(d.get('api_key',''))" 2>/dev/null || echo "")
@@ -80,9 +111,6 @@ for m in d.get('data', []):
     auth = ' ✓' if m.get('authorized') else ''
     print(f'  {m[\"id\"]}{auth}')
 " 2>/dev/null || echo "  (无法获取模型列表)"
-  else
-    echo "✗ Gateway 未运行"
-    [ -f "$LOG_FILE" ] && echo "" && echo "最近日志:" && tail -5 "$LOG_FILE" | sed 's/^/  /'
   fi
 }
 
@@ -95,6 +123,6 @@ case "$CMD" in
   *)
     echo "用法: $(basename "$0") {start|stop|restart|status}"
     echo ""
-    echo "环境变量: MYZT_PORT=$PORT  MYZT_HOST=$HOST"
+    echo "环境变量: MYZT_PORT=$PORT  MYZT_HOST=$HOST  MYZT_CDP_PORT=$CDP_PORT"
     ;;
 esac
