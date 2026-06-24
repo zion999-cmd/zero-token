@@ -19,21 +19,24 @@ is_cdp_ready() {
   curl -sf --connect-timeout 2 "${CDP_URL}/json/version" >/dev/null 2>&1
 }
 
-# Whether a debug Chrome process is running (any port, any user-dir).
-# macOS pgrep is case-sensitive, so match both "chrome" and "Chrome".
+# Whether a debug Chrome process is running on our CDP port.
 is_debug_chrome_running() {
-  pgrep -fi "chrome.*remote-debugging-port" >/dev/null 2>&1
+  pgrep -f "chrome.*remote-debugging-port=${CDP_PORT}" >/dev/null 2>&1
 }
 
-# Kill any existing debug Chrome to get a clean slate.
+# Kill any existing debug Chrome (matching the specific CDP port) to get a clean slate.
 kill_debug_chrome() {
-  if is_debug_chrome_running; then
-    pkill -fi "chrome.*remote-debugging-port" 2>/dev/null || true
-    # Also try to free the CDP port in case Chrome didn't shut down cleanly
-    local occupant
-    occupant=$(lsof -ti ":${CDP_PORT}" 2>/dev/null | head -1 || true)
-    [ -n "$occupant" ] && kill "$occupant" 2>/dev/null || true
+  # 精确匹配端口号，避免误杀普通 Chrome（参考原始脚本）
+  local pattern="chrome.*remote-debugging-port=${CDP_PORT}"
+  if pgrep -f "$pattern" >/dev/null 2>&1; then
+    pkill -f "$pattern" 2>/dev/null || true
     sleep 2
+
+    # 如果普通关闭失败，强制关闭
+    if pgrep -f "$pattern" >/dev/null 2>&1; then
+      pkill -9 -f "$pattern" 2>/dev/null || true
+      sleep 1
+    fi
   fi
   # Double-check: if CDP is still up, Chrome is still running
   if is_cdp_ready; then
