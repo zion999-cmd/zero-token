@@ -26,20 +26,22 @@ else
     > /tmp/chrome-debug.log 2>&1 &
 
   # 等待 CDP 就绪（最多 30 秒）
+  local started=false
   for i in $(seq 1 30); do
     if is_cdp_ready; then
       echo "✓ Chrome 启动成功！"
+      started=true
       break
     fi
+    [ $((i % 5)) -eq 0 ] && echo "  等待中... (${i}s)"
     sleep 1
   done
-fi
-
-# 最终检查
-if ! is_cdp_ready; then
-  echo "✗ Chrome 启动失败（${CDP_URL} 不可达）"
-  echo "  查看日志: /tmp/chrome-debug.log"
-  exit 1
+  if ! $started; then
+    echo "✗ Chrome 启动失败（${CDP_URL} 不可达，已等待 30s）"
+    echo "  Chrome 进程: $(pgrep -fli 'chrome.*remote-debugging' | head -1 || echo '无')"
+    echo "  查看日志: /tmp/chrome-debug.log"
+    exit 1
+  fi
 fi
 
 echo ""

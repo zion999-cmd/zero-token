@@ -16,7 +16,7 @@ USER_DATA_DIR="${HOME}/.config/chrome-myzt-debug"
 
 # Whether Chrome debug (CDP) is reachable right now.
 is_cdp_ready() {
-  curl -s "${CDP_URL}/json/version" >/dev/null 2>&1
+  curl -sf --connect-timeout 2 "${CDP_URL}/json/version" >/dev/null 2>&1
 }
 
 # Whether a debug Chrome process is running (any port, any user-dir).
