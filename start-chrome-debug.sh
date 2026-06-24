@@ -50,7 +50,7 @@ else
     --disable-background-mode \
     --disable-sync \
     --disable-features=MediaRouter \
-    --remote-allow-origins=* \
+    '--remote-allow-origins=*' \
     > /tmp/chrome-debug.log 2>&1 &
 
   # 等待 CDP 就绪（最多 60 秒）
@@ -89,8 +89,8 @@ PLATFORMS=(
 )
 echo "正在打开 ${#PLATFORMS[@]} 个标签页..."
 for url in "${PLATFORMS[@]}"; do
-  # 用 CDP API 打开标签页，比 spawn Chrome 进程可靠得多
-  curl -sf "${CDP_URL}/json/new?${url}" >/dev/null 2>&1
+  # 用 CDP API 打开标签页（必须用 PUT 方法）
+  curl -sf -X PUT "${CDP_URL}/json/new?${url}" >/dev/null 2>&1
   sleep 0.15
 done
 echo "✓ 已全部打开"
