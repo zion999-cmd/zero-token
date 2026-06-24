@@ -1,5 +1,7 @@
 #!/bin/bash
-# 启动 Chrome 调试模式 + 打开所有 LLM 平台
+# 启动 Chrome 调试模式（用于 My Zero Token 连接）
+# 兼容 macOS / Linux (含 Deepin) / Windows (Git Bash / WSL)
+# 单实例：若已有调试 Chrome 则先关闭再重启
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/chrome.sh"
@@ -7,90 +9,117 @@ source "$SCRIPT_DIR/lib/chrome.sh"
 CHROME_PATH=$(detect_chrome)
 [ -z "$CHROME_PATH" ] && echo "✗ 未找到 Chrome" && exit 1
 
-# 如果 CDP 已经是可达的，直接复用，不重启
-if is_cdp_ready; then
-  echo "✓ Chrome 调试模式已在运行 (${CDP_URL})"
-else
-  # 如果 Chrome 进程存在但 CDP 暂不可达，可能正在启动中——先等一等
-  if is_debug_chrome_running; then
-    echo "  Chrome 进程已存在，等待 CDP 就绪..."
-    for i in $(seq 1 10); do
-      if is_cdp_ready; then
-        echo "✓ Chrome 调试模式已就绪 (${CDP_URL})"
-        break 2  # 跳出外层 if-else，继续后面的标签页打开
-      fi
-      sleep 1
-    done
-    echo "  CDP 仍未就绪，重新启动 Chrome..."
-  fi
-
-  # 尝试杀掉旧进程再启动
-  kill_debug_chrome
-
-  # 清理僵死的 SingletonLock（Chrome 崩溃残留会导致启动卡住）
-  _lock="$USER_DATA_DIR/SingletonLock"
-  if [ -L "$_lock" ]; then
-    _target=$(readlink "$_lock" 2>/dev/null || true)
-    if [ -n "$_target" ]; then
-      # 提取 PID 检查是否存活
-      _lock_pid="${_target##*-}"
-      if ! kill -0 "$_lock_pid" 2>/dev/null; then
-        rm -f "$_lock" && echo "  已清理僵死 SingletonLock ($_target)"
-      fi
-    fi
-  fi
-
-  echo "启动 Chrome 调试模式..."
-  "$CHROME_PATH" \
-    --remote-debugging-port="$CDP_PORT" \
-    --user-data-dir="$USER_DATA_DIR" \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-background-networking \
-    --disable-background-mode \
-    --disable-sync \
-    --disable-features=MediaRouter \
-    '--remote-allow-origins=*' \
-    > /tmp/chrome-debug.log 2>&1 &
-
-  # 等待 CDP 就绪（最多 60 秒）
-  started=0
-  for i in $(seq 1 60); do
-    if is_cdp_ready; then
-      echo "✓ Chrome 启动成功！"
-      started=1
-      break
-    fi
-    [ $((i % 10)) -eq 0 ] && echo "  等待中... (${i}s)"
-    sleep 1
-  done
-  if [ "$started" = "0" ]; then
-    echo "✗ Chrome 启动失败（${CDP_URL} 不可达，已等待 60s）"
-    echo "  Chrome 进程: $(pgrep -fli 'chrome.*remote-debugging' 2>/dev/null | head -1 || echo '无')"
-    echo "  查看日志: /tmp/chrome-debug.log"
-    exit 1
-  fi
-fi
-
+echo "Chrome: $CHROME_PATH"
+echo "端口: ${CDP_PORT}"
+echo "用户数据目录: ${USER_DATA_DIR}"
 echo ""
 
-PLATFORMS=(
-  "https://chat.deepseek.com/"
-  "https://claude.ai/new"
-  "https://chatgpt.com"
-  "https://www.kimi.com"
-  "https://chatglm.cn"
-  "https://grok.com"
-  "https://www.qianwen.com/chat/"   # Qwen CN (domestic)
-  "https://chat.qwen.ai"           # Qwen Intl (international)
-  "https://www.doubao.com/chat/"
-  "https://www.perplexity.ai"
-  "https://gemini.google.com/app"
-)
-echo "正在打开 ${#PLATFORMS[@]} 个标签页..."
-for url in "${PLATFORMS[@]}"; do
-  # 用 CDP API 打开标签页（必须用 PUT 方法）
-  curl -sf -X PUT "${CDP_URL}/json/new?${url}" >/dev/null 2>&1
-  sleep 0.15
+# ─── 单实例：关闭已有调试 Chrome（精确匹配端口号，避免误伤普通 Chrome）───
+if pgrep -f "chrome.*remote-debugging-port=${CDP_PORT}" > /dev/null 2>&1; then
+  echo "检测到已有调试 Chrome，正在关闭..."
+  pkill -f "chrome.*remote-debugging-port=${CDP_PORT}" 2>/dev/null
+  sleep 2
+
+  if pgrep -f "chrome.*remote-debugging-port=${CDP_PORT}" > /dev/null 2>&1; then
+    echo "普通关闭失败，尝试强制关闭..."
+    pkill -9 -f "chrome.*remote-debugging-port=${CDP_PORT}" 2>/dev/null
+    sleep 1
+  fi
+
+  if pgrep -f "chrome.*remote-debugging-port=${CDP_PORT}" > /dev/null 2>&1; then
+    echo "✗ 无法关闭现有 Chrome，请手动执行: pkill -9 -f 'chrome.*remote-debugging-port=${CDP_PORT}'"
+    exit 1
+  fi
+  echo "✓ 已关闭"
+  echo ""
+fi
+
+# ─── 启动 Chrome ─────────────────────────────────────────────
+TMP_LOG="/tmp/chrome-debug.log"
+
+echo "正在启动 Chrome 调试模式..."
+echo ""
+
+"$CHROME_PATH" \
+  --remote-debugging-port="$CDP_PORT" \
+  --user-data-dir="$USER_DATA_DIR" \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-background-networking \
+  --disable-sync \
+  --disable-translate \
+  --disable-features=TranslateUI \
+  '--remote-allow-origins=*' \
+  > "$TMP_LOG" 2>&1 &
+
+CHROME_PID=$!
+echo "Chrome 日志: $TMP_LOG"
+
+# ─── 等待启动 ────────────────────────────────────────────────
+echo "等待 Chrome 启动..."
+for i in {1..30}; do
+  if curl -s "${CDP_URL}/json/version" > /dev/null 2>&1; then
+    break
+  fi
+  echo -n "."
+  sleep 1
 done
-echo "✓ 已全部打开"
+echo ""
+echo ""
+
+# ─── 检查结果 ────────────────────────────────────────────────
+if curl -s "${CDP_URL}/json/version" > /dev/null 2>&1; then
+  VERSION_INFO=$(curl -s "${CDP_URL}/json/version" | jq -r '.Browser' 2>/dev/null || echo "未知版本")
+
+  echo "✓ Chrome 调试模式启动成功！"
+  echo ""
+  echo "Chrome PID: $CHROME_PID"
+  echo "Chrome 版本: $VERSION_INFO"
+  echo "调试端口: ${CDP_URL}"
+  echo "用户数据目录: $USER_DATA_DIR"
+  echo ""
+  echo "正在打开各 Web 平台登录页（便于授权）..."
+
+  PLATFORMS=(
+    "https://claude.ai/new"
+    "https://chatgpt.com"
+    "https://www.doubao.com/chat/"
+    "https://chat.qwen.ai"
+    "https://www.kimi.com"
+    "https://gemini.google.com/app"
+    "https://grok.com"
+    "https://chat.deepseek.com/"
+    "https://chatglm.cn"
+    "https://www.qianwen.com/chat/"   # Qwen CN (domestic)
+    "https://www.perplexity.ai"
+  )
+  for url in "${PLATFORMS[@]}"; do
+    "$CHROME_PATH" --remote-debugging-port="$CDP_PORT" --user-data-dir="$USER_DATA_DIR" "$url" > /dev/null 2>&1 &
+    sleep 0.5
+  done
+
+  echo "✓ 已打开 ${#PLATFORMS[@]} 个标签页"
+  echo ""
+  echo "=========================================="
+  echo "下一步操作："
+  echo "=========================================="
+  echo "1. 在各标签页中登录需要使用的平台"
+  echo "2. 确保 config 中 browser.attachOnly=true 且 browser.cdpUrl=${CDP_URL}"
+  echo "3. 运行 ./onboard.sh 完成授权（将复用此浏览器）"
+  echo ""
+  echo "停止调试模式："
+  echo "  pkill -f 'chrome.*remote-debugging-port=${CDP_PORT}'"
+  echo "=========================================="
+else
+  echo "✗ Chrome 启动失败"
+  echo ""
+  echo "请检查："
+  echo "  1. Chrome 路径: $CHROME_PATH"
+  echo "  2. 端口 ${CDP_PORT} 是否被占用: lsof -i:${CDP_PORT}"
+  echo "  3. 用户数据目录权限: $USER_DATA_DIR"
+  echo "  4. 启动日志: $TMP_LOG"
+  echo ""
+  echo "尝试手动启动："
+  echo "  \"$CHROME_PATH\" --remote-debugging-port=${CDP_PORT} --user-data-dir=\"$USER_DATA_DIR\""
+  exit 1
+fi

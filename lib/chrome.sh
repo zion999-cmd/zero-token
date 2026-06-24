@@ -23,25 +23,3 @@ is_cdp_ready() {
 is_debug_chrome_running() {
   pgrep -f "chrome.*remote-debugging-port=${CDP_PORT}" >/dev/null 2>&1
 }
-
-# Kill any existing debug Chrome (matching the specific CDP port) to get a clean slate.
-kill_debug_chrome() {
-  # 精确匹配端口号，避免误杀普通 Chrome（参考原始脚本）
-  local pattern="chrome.*remote-debugging-port=${CDP_PORT}"
-  if pgrep -f "$pattern" >/dev/null 2>&1; then
-    pkill -f "$pattern" 2>/dev/null || true
-    sleep 2
-
-    # 如果普通关闭失败，强制关闭
-    if pgrep -f "$pattern" >/dev/null 2>&1; then
-      pkill -9 -f "$pattern" 2>/dev/null || true
-      sleep 1
-    fi
-  fi
-  # Double-check: if CDP is still up, Chrome is still running
-  if is_cdp_ready; then
-    echo "⚠ 无法关闭旧的 Chrome，端口 ${CDP_PORT} 仍被占用" >&2
-    return 1
-  fi
-  return 0
-}
