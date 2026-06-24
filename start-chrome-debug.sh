@@ -89,7 +89,8 @@ PLATFORMS=(
 )
 echo "正在打开 ${#PLATFORMS[@]} 个标签页..."
 for url in "${PLATFORMS[@]}"; do
-  "$CHROME_PATH" --user-data-dir="$USER_DATA_DIR" "$url" >/dev/null 2>&1 &
-  sleep 0.3
+  # 用 CDP API 打开标签页，比 spawn Chrome 进程可靠得多
+  curl -sf "${CDP_URL}/json/new?${url}" >/dev/null 2>&1
+  sleep 0.15
 done
 echo "✓ 已全部打开"
