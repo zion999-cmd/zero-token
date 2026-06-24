@@ -20,11 +20,25 @@ is_cdp_ready() {
 }
 
 # Whether a debug Chrome process is running (any port, any user-dir).
+# macOS pgrep is case-sensitive, so match both "chrome" and "Chrome".
 is_debug_chrome_running() {
-  pgrep -f "chrome.*remote-debugging-port" >/dev/null 2>&1
+  pgrep -fi "chrome.*remote-debugging-port" >/dev/null 2>&1
 }
 
 # Kill any existing debug Chrome to get a clean slate.
 kill_debug_chrome() {
-  is_debug_chrome_running && pkill -f "chrome.*remote-debugging-port" 2>/dev/null && sleep 2
+  if is_debug_chrome_running; then
+    pkill -fi "chrome.*remote-debugging-port" 2>/dev/null || true
+    # Also try to free the CDP port in case Chrome didn't shut down cleanly
+    local occupant
+    occupant=$(lsof -ti ":${CDP_PORT}" 2>/dev/null | head -1 || true)
+    [ -n "$occupant" ] && kill "$occupant" 2>/dev/null || true
+    sleep 2
+  fi
+  # Double-check: if CDP is still up, Chrome is still running
+  if is_cdp_ready; then
+    echo "⚠ 无法关闭旧的 Chrome，端口 ${CDP_PORT} 仍被占用" >&2
+    return 1
+  fi
+  return 0
 }

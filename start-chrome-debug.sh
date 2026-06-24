@@ -7,7 +7,10 @@ source "$SCRIPT_DIR/lib/chrome.sh"
 CHROME_PATH=$(detect_chrome)
 [ -z "$CHROME_PATH" ] && echo "✗ 未找到 Chrome" && exit 1
 
-kill_debug_chrome
+if ! kill_debug_chrome; then
+  echo "✗ 无法停止旧的 Chrome 调试进程，请手动关闭后重试"
+  exit 1
+fi
 
 # 启动调试 Chrome（单实例）
 "$CHROME_PATH" \
