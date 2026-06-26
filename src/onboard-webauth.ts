@@ -10,6 +10,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import * as readline from "node:readline";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import WebSocket from "ws";
 
 // ── 类型 ──────────────────────────────────────────────
 
@@ -189,6 +190,92 @@ function buildCookieString(cookies: Array<{ name: string; value: string }>): str
   return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 }
 
+// ── CDP Cookie 清除 ───────────────────────────────────
+
+/**
+ * 通过 CDP 精确清除指定域名的 cookies 和 localStorage，
+ * 用于解决过期 cookie 导致页面无法正常登录/退出的问题。
+ * 只影响目标域名，不干扰其他网站。
+ */
+async function clearCookiesForProvider(
+  provider: WebProvider,
+  onProgress: (msg: string) => void,
+): Promise<void> {
+  const CDP_URL = "http://127.0.0.1:9222";
+  const domain = new URL(provider.url).hostname;
+
+  try {
+    // 获取浏览器 WebSocket 端点
+    const resp = await fetch(`${CDP_URL}/json/version`);
+    const data = (await resp.json()) as { webSocketDebuggerUrl?: string };
+    const browserWsUrl = data.webSocketDebuggerUrl;
+    if (!browserWsUrl) {
+      onProgress("  (无法获取 CDP WebSocket，跳过 cookie 清除)");
+      return;
+    }
+
+    const ws = new WebSocket(browserWsUrl);
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", resolve);
+      ws.on("error", reject);
+      setTimeout(() => reject(new Error("ws timeout")), 5000);
+    });
+
+    let msgId = 0;
+    const send = (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+      return new Promise((resolve) => {
+        const id = ++msgId;
+        ws.once("message", (raw) => resolve(JSON.parse(raw.toString())));
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+    };
+
+    // 清除主域名 + www 子域名的 cookies
+    const targets = [domain, `www.${domain.replace(/^www\./, "")}`];
+    let totalCookies = 0;
+
+    for (const target of targets) {
+      try {
+        const { result } = (await send("Network.getCookies", {
+          urls: [`https://${target}/`],
+        })) as { result?: { cookies: Array<{ name: string; domain: string }> } };
+
+        const cookies = result?.cookies ?? [];
+        if (cookies.length > 0) {
+          for (const c of cookies) {
+            await send("Network.deleteCookies", {
+              name: c.name,
+              domain: c.domain,
+              url: `https://${target}/`,
+            });
+          }
+          totalCookies += cookies.length;
+        }
+      } catch {
+        // 域名可能不可达
+      }
+    }
+
+    // 清除 localStorage / sessionStorage
+    try {
+      await send("Storage.clearDataForOrigin", {
+        origin: `https://${domain}`,
+        storageTypes: "all",
+      });
+    } catch {
+      // ignore
+    }
+
+    ws.close();
+
+    if (totalCookies > 0) {
+      onProgress(`✓ 已清除 ${domain} 的 ${totalCookies} 个 cookies + localStorage`);
+    }
+  } catch (err) {
+    onProgress(`  (cookie 清除失败: ${err instanceof Error ? err.message : String(err)})`);
+  }
+}
+
 // ── 主流程 ────────────────────────────────────────────
 
 async function authProvider(
@@ -203,6 +290,9 @@ async function authProvider(
   const context = browser.contexts()[0];
 
   try {
+    // 先清除该提供商的过期 cookie，确保干净重新登录
+    await clearCookiesForProvider(provider, onProgress);
+
     // 先检查是否已经打开该页面
     const domain = new URL(provider.url).hostname.replace("www.", "");
     const existingPage = await getExistingPage(browser, domain);
