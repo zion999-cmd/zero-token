@@ -47,6 +47,8 @@ open http://127.0.0.1:3001
 
 首次使用后，已授权的模型 cookie 自动从 `.myzt-state/auth-profiles.json` 加载，无需手动输入。
 
+> **Cookie 过期处理：** 运行 `./onboard.sh` 重新授权时，会自动通过 CDP 精确清除该提供商的过期 cookie 和 localStorage（不影响其他网站）。解决了部分平台（如 GLM）cookie 过期后页面无法退出/刷新的问题。
+
 ## 访问控制
 
 创建 `config/config.json` 来启用 API 认证（OpenAI 兼容）：
@@ -73,8 +75,8 @@ x-api-key: sk-my-secret-key
 ./server.sh restart   # 重启网关
 ./server.sh status    # 查看状态和可用模型列表
 
-./start-chrome-debug.sh  # 启动 Chrome 调试模式
-./onboard.sh             # Web 模型授权向导
+./start-chrome-debug.sh  # 启动 Chrome 调试模式（精确杀旧实例，不影响普通 Chrome）
+./onboard.sh             # Web 模型授权向导（自动清除过期 cookie）
 ```
 
 ## API
