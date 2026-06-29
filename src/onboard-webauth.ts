@@ -205,22 +205,24 @@ async function clearCookiesForProvider(
   const domain = new URL(provider.url).hostname;
 
   try {
-    // 获取浏览器 WebSocket 端点
-    const resp = await fetch(`${CDP_URL}/json/version`);
-    const data = (await resp.json()) as { webSocketDebuggerUrl?: string };
-    const browserWsUrl = data.webSocketDebuggerUrl;
-    if (!browserWsUrl) {
-      onProgress("  (无法获取 CDP WebSocket，跳过 cookie 清除)");
+    // 获取一个 page 级别的 WebSocket（Network.getCookies 需要 page target）
+    const tabsResp = await fetch(`${CDP_URL}/json/list`);
+    const tabs = (await tabsResp.json()) as Array<{ type: string; webSocketDebuggerUrl: string; url: string }>;
+    let pageWsUrl = tabs.find((t) => t.type === "page")?.webSocketDebuggerUrl;
+
+    if (!pageWsUrl) {
+      onProgress("  (无可用的 CDP page，跳过 cookie 清除)");
       return;
     }
 
-    const ws = new WebSocket(browserWsUrl);
+    const ws = new WebSocket(pageWsUrl);
     await new Promise<void>((resolve, reject) => {
       ws.on("open", resolve);
       ws.on("error", reject);
       setTimeout(() => reject(new Error("ws timeout")), 5000);
     });
 
+    // 必须先启用 Network domain 才能调用 Network 方法
     let msgId = 0;
     const send = (method: string, params?: Record<string, unknown>): Promise<unknown> => {
       return new Promise((resolve) => {
@@ -229,6 +231,8 @@ async function clearCookiesForProvider(
         ws.send(JSON.stringify({ id, method, params }));
       });
     };
+
+    await send("Network.enable");
 
     // 清除主域名 + www 子域名的 cookies
     const targets = [domain, `www.${domain.replace(/^www\./, "")}`];
