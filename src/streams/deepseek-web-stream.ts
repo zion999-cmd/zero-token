@@ -198,13 +198,81 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
         const searchEnabled =
           (options as unknown as { searchEnabled?: boolean })?.searchEnabled ?? true;
         const preempt = (options as unknown as { preempt?: boolean })?.preempt ?? false;
-        const fileIds = (options as unknown as { fileIds?: string[] })?.fileIds || [];
+
+        // ── 图片检测 & 上传 ──────────────────────────────────
+        let modelType: string | undefined;
+        let fileIds: string[] =
+          (options as unknown as { fileIds?: string[] })?.fileIds || [];
+
+        // 从消息中提取图片 URL 并上传到 DeepSeek
+        const imageUrls: string[] = [];
+        for (const m of messages) {
+          const content = m.content;
+          if (Array.isArray(content)) {
+            for (const part of content) {
+              if (part.type === "image" && "image" in part) {
+                const img = part as { image: string };
+                imageUrls.push(img.image);
+              }
+            }
+          }
+        }
+
+        if (imageUrls.length > 0) {
+          console.log(
+            `[DeepseekWebStream] Detected ${imageUrls.length} image(s), uploading to DeepSeek...`,
+          );
+          for (const url of imageUrls) {
+            try {
+              // 支持 data: URL 和 http(s) URL
+              let fileBuffer: Buffer;
+              let fileName: string;
+              if (url.startsWith("data:")) {
+                const [header, b64] = url.split(",", 2);
+                const mimeMatch = header.match(/data:([^;]+)/);
+                const mime = mimeMatch ? mimeMatch[1] : "image/png";
+                fileBuffer = Buffer.from(b64, "base64");
+                const ext = mime.split("/")[1] || "png";
+                fileName = `image.${ext}`;
+              } else {
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                fileBuffer = Buffer.from(await resp.arrayBuffer());
+                const contentType = resp.headers.get("content-type") || "";
+                const ext = contentType.includes("png")
+                  ? "png"
+                  : contentType.includes("jpeg") || contentType.includes("jpg")
+                    ? "jpg"
+                    : contentType.includes("webp")
+                      ? "webp"
+                      : "png";
+                fileName = `image.${ext}`;
+              }
+              const fileId = await client.uploadFile(fileBuffer, fileName);
+              fileIds.push(fileId);
+              console.log(
+                `[DeepseekWebStream] Image uploaded: ${fileName} → ${fileId}`,
+              );
+            } catch (err) {
+              console.error(
+                `[DeepseekWebStream] Failed to upload image from ${url.substring(0, 80)}:`,
+                err instanceof Error ? err.message : String(err),
+              );
+              throw new Error(
+                `Failed to upload image to DeepSeek: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+          // 图片模式下使用 vision 模型类型
+          modelType = "vision";
+        }
 
         const responseStream = await client.chatCompletions({
           sessionId: dsSessionId,
           parentMessageId: parentId,
           message: prompt,
           model: model.id,
+          modelType,
           searchEnabled,
           preempt,
           fileIds,

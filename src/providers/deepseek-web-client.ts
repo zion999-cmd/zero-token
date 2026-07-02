@@ -276,6 +276,7 @@ export class DeepSeekWebClient {
     sessionId: string;
     message: string;
     model?: string;
+    modelType?: string;
     fileIds?: string[];
     searchEnabled?: boolean;
     preempt?: boolean;
@@ -307,6 +308,7 @@ export class DeepSeekWebClient {
         parent_message_id: params.parentMessageId ?? null,
         prompt: params.message,
         ref_file_ids: params.fileIds || [],
+        ...(params.modelType ? { model_type: params.modelType } : {}),
         thinking_enabled: !(
           params.model === "deepseek-chat" && !params.model?.includes("reasoning")
         ), // Default to true unless specifically chat-only
@@ -396,7 +398,7 @@ export class DeepSeekWebClient {
         id: "deepseek-chat",
         name: "DeepSeek V3",
         reasoning: false,
-        input: ["text"],
+        input: ["text", "image"],
         cost: {
           input: 0,
           output: 0,

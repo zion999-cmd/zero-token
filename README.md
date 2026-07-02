@@ -10,7 +10,7 @@
 
 | 供应商 | 聊天 | 工具调用 | 图片识别 | 方式 |
 |--------|------|---------|---------|------|
-| DeepSeek | ✅ | ✅ | — | 纯 HTTP API (含 PoW 解题) |
+| DeepSeek | ✅ | ✅ | ✅ | 纯 HTTP API (含 PoW 解题), 图片通过 vision 模式 |
 | Claude | ✅ | ✅ | — | 浏览器内 API (绕过 Cloudflare) |
 | Kimi | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 Node.js 直传 |
 | ChatGLM | ✅ | ✅ | — | 浏览器客户端 (attach) |
