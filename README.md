@@ -13,7 +13,7 @@
 | DeepSeek | ✅ | ✅ | ✅ | 纯 HTTP API (含 PoW 解题), 图片通过 vision 模式 |
 | Claude | ✅ | ✅ | — | 浏览器内 API (绕过 Cloudflare) |
 | Kimi | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 Node.js 直传 |
-| ChatGLM | ✅ | ✅ | — | 浏览器客户端 (attach) |
+| ChatGLM | ✅ | ✅ | ⚠️ | 浏览器客户端 (attach), 图片通过 image_url 格式 (待测试) |
 | Qwen 国内版 | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 CDP 上传至 OSS |
 | Qwen 国际版 | ✅ | ✅ | ⚠️ | 浏览器客户端 (page.evaluate), chat.qwen.ai, 文件上传可用，chat 端图片格式待适配 |
 | Grok | ✅ | ⚠️ | — | DOM 交互 (anti-bot 绕过) |
