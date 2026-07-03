@@ -252,6 +252,7 @@ export class ZWebClientBrowser {
     conversationId?: string;
     message: string;
     model: string;
+    imageUrls?: string[];
     signal?: AbortSignal;
   }): Promise<ReadableStream<Uint8Array>> {
     if (!this.page) {
@@ -262,10 +263,23 @@ export class ZWebClientBrowser {
       await this.refreshAccessToken();
     }
 
-    const { conversationId, message, model } = params;
+    const { conversationId, message, model, imageUrls } = params;
     const assistantId = ASSISTANT_ID_MAP[model] ?? DEFAULT_ASSISTANT_ID;
 
-    console.log(`[Z Web Browser] Sending request... model=${model} assistantId=${assistantId}`);
+    console.log(`[Z Web Browser] Sending request... model=${model} assistantId=${assistantId} images=${imageUrls?.length || 0}`);
+
+    // 构建 content 数组：文本 + 图片
+    const contentParts: Array<Record<string, unknown>> = [
+      { type: "text", text: message },
+    ];
+    if (imageUrls && imageUrls.length > 0) {
+      for (const url of imageUrls) {
+        contentParts.push({
+          type: "image_url",
+          image_url: { url },
+        });
+      }
+    }
 
     const fetchTimeoutMs = 120_000;
     const sign = generateSign();
@@ -290,7 +304,7 @@ export class ZWebClientBrowser {
       messages: [
         {
           role: "user",
-          content: [{ type: "text", text: message }],
+          content: contentParts,
         },
       ],
     };

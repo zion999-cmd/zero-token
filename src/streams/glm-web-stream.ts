@@ -38,14 +38,20 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
         const messages = context.messages || [];
         const lastUserMsg = [...messages].reverse().find((m) => (m as { role: string }).role === "user");
         let prompt = "";
+        const imageUrls: string[] = [];
         if (lastUserMsg) {
           if (typeof lastUserMsg.content === "string") {
             prompt = lastUserMsg.content;
           } else if (Array.isArray(lastUserMsg.content)) {
-            prompt = (lastUserMsg.content as Array<{ type: string; text?: string }>)
-              .filter((p) => p.type === "text")
-              .map((p) => p.text || "")
-              .join("");
+            for (const part of lastUserMsg.content as Array<{ type: string; text?: string; image?: string; image_url?: { url: string } }>) {
+              if (part.type === "text") {
+                prompt += (part.text || "");
+              } else if (part.type === "image" && "image" in part) {
+                imageUrls.push(part.image);
+              } else if (part.type === "image_url" && part.image_url) {
+                imageUrls.push(part.image_url.url);
+              }
+            }
           }
         }
 
@@ -65,6 +71,7 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
           model: model.id,
           signal: streamOptions?.signal,
           conversationId: cachedCid || undefined,
+          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
         });
 
         if (!responseStream) {
