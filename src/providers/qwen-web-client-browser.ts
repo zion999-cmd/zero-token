@@ -41,6 +41,48 @@ export interface QwenWebClientOptions {
 /**
  * Qwen Web Client using Playwright browser context.
  * Domestic CN version: page at www.qianwen.com/chat/, API at chat2.qianwen.com.
+ *
+ * ## Image upload mechanism (⚠️ read before modifying)
+ *
+ * The full image upload pipeline:
+ *
+ * ```
+ *   API receives image_url (base64 data URL)
+ *     → stream decodes base64, writes temp file
+ *     → client.uploadFile() called
+ *       → CDP Network.enable (monitor file/record/add)
+ *       → find hidden <input type="file"> on the page
+ *       → Playwright setInputFiles(tmpFile)
+ *       → page JS detects file selection → OSS upload → file/record/add API
+ *       → CDP captures response → extract fileUuid + url
+ *     → chatCompletions() sends OSS URL in API request body
+ *       → POST chat2.qianwen.com/api/v2/chat
+ * ```
+ *
+ * ### Critical details:
+ *
+ * 1. **Page matching**: MUST match CN page (qianwen.com) BEFORE Intl page (qwen.ai).
+ *    The Intl page has a file input with `accept=""` which doesn't match the
+ *    `accept*=".png"` / `accept*="image"` selectors used here. If the Intl page
+ *    is matched first, `uploadFile()` fails with "No image file input found".
+ *
+ * 2. **File input is NOT persistent**: Qwen CN creates the hidden `<input type="file">`
+ *    dynamically ONLY after clicking "添加附件" → "上传图片" in the Radix dropdown menu.
+ *    Previous versions relied on a dedicated newPage() + goto() which triggered full
+ *    page render including the hidden input. After the refactor to reuse the main page,
+ *    the input may not exist yet on the landing/dashboard view.
+ *
+ * 3. **waitForSelector needs `state: 'attached'`**: The file input is `display: none`.
+ *    Playwright's default `state: 'visible'` will timeout. Always use `state: 'attached'`.
+ *
+ * 4. **Browser session integrity required**: The oss_token → OSS PUT → callback →
+ *    file/record/add chain requires browser cookies/CSRF tokens. Direct Node.js fetch()
+ *    was tried (commit cb9087b) but failed — the OSS callback rejects non-browser requests.
+ *    The upload MUST go through the browser page.
+ *
+ * 5. **10-image limit**: Qwen's frontend limits the chat input to 10 images.
+ *    The cleanup code in `uploadFile()` clears the file input value and clicks
+ *    close/remove buttons on image previews after each upload to reset the counter.
  */
 export class QwenWebClientBrowser {
   private sessionToken: string;
@@ -146,7 +188,10 @@ export class QwenWebClientBrowser {
       ).contexts()[0]!;
 
       const pages = this.browser.pages();
-      let qwenPage = pages.find((p) => p.url().includes("qianwen.com") || p.url().includes("qwen.ai"));
+      // Match CN page first — Intl page (qwen.ai) has a file input with empty accept,
+      // which doesn't work with this client's selectors.
+      let qwenPage = pages.find((p) => p.url().includes("qianwen.com"))
+        || pages.find((p) => p.url().includes("qwen.ai"));
 
       if (qwenPage) {
         console.log(`[Qwen Web Browser] Found existing Qwen page`);
@@ -196,6 +241,25 @@ export class QwenWebClientBrowser {
     });
 
     await this.browser.addCookies(cookies);
+
+    // Ensure the page is ready: Qwen CN creates the hidden file input
+    // dynamically via "添加附件" → "上传图片" dropdown. Trigger it once
+    // so the input exists for subsequent uploadFile() calls.
+    await this.page.waitForTimeout(1000);
+    const hasFileInput = await this.page.$('input[type="file"]');
+    if (!hasFileInput) {
+      const attachBtn = await this.page.$('[aria-label="添加附件"]');
+      if (attachBtn) {
+        await attachBtn.click();
+        await this.page.waitForTimeout(600);
+        await this.page.evaluate(() => {
+          const items = [...document.querySelectorAll('[role="menuitem"]')];
+          const uploadImg = items.find((el) => el.textContent?.includes("上传图片"));
+          if (uploadImg) (uploadImg as HTMLElement).click();
+        });
+        await this.page.waitForSelector('input[type="file"]', { state: 'attached', timeout: 5000 }).catch(() => {});
+      }
+    }
 
     return { browser: this.browser, page: this.page };
   }
@@ -264,9 +328,27 @@ export class QwenWebClientBrowser {
         },
       );
 
-      const fileInput = await page.$(
+      // Qwen CN creates the hidden file input dynamically — it only exists after
+      // clicking "添加附件" → "上传图片" in the Radix dropdown menu.
+      let fileInput = await page.$(
         'input[type="file"][accept*=".png"], input[type="file"][accept*="image"]',
       );
+      if (!fileInput) {
+        const attachBtn = await page.$('[aria-label="添加附件"]');
+        if (attachBtn) {
+          await attachBtn.click();
+          await page.waitForTimeout(600);
+          await page.evaluate(() => {
+            const items = [...document.querySelectorAll('[role="menuitem"]')];
+            const uploadImg = items.find((el) => el.textContent?.includes("上传图片"));
+            if (uploadImg) (uploadImg as HTMLElement).click();
+          });
+          await page.waitForSelector('input[type="file"]', { state: 'attached', timeout: 5000 });
+        }
+        fileInput = await page.$(
+          'input[type="file"][accept*=".png"], input[type="file"][accept*="image"]',
+        );
+      }
       if (!fileInput) {
         throw new Error("No image file input found on Qwen page");
       }

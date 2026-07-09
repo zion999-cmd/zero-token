@@ -458,6 +458,34 @@ DS 以 `<tool_call name="Write">{...}</tool_call>` 格式输出工具调用。
 解析时工具名取自 `name=` 属性（不是 JSON body 里的 `"tool"` 字段），args JSON 是标签内容。
 此外 DS 有时用 `</Write>` 代替 `</tool_call>` 作为关闭标签，流解析器同样支持。
 
+### Qwen 国内版图片上传
+
+Qwen CN（qianwen.com）的图片上传链路，与 Kimi/Intl 的纯 HTTP 方式不同，必须通过浏览器：
+
+```
+API 收到 image_url (base64)
+  → stream 解码 → 写临时文件
+  → client.uploadFile()
+    → 在页面上找到隐藏的 <input type="file">
+    → Playwright setInputFiles(临时文件)
+    → 页面 JS 检测到文件 → OSS 上传 → file/record/add API
+    → CDP 捕获响应 → 提取 fileUuid + OSS URL
+  → chatCompletions() 将 OSS URL 写入 API 请求体
+    → POST chat2.qianwen.com/api/v2/chat
+```
+
+**关键注意事项：**
+
+1. **页面匹配顺序**：CN 客户端（qwen-web-client-browser.ts）必须优先匹配 `qianwen.com` 再 fallback 到 `qwen.ai`。Intl 页面的 file input 的 `accept=""` 不匹配 CN 客户端的选择器 `accept*=".png"`。
+
+2. **file input 不是持久存在的**：Qwen CN 页面的隐藏 `<input type="file">` 不是页面加载时就有的，需要点击 "添加附件" → "上传图片" 后 Radix 下拉菜单才会动态创建。代码里在 `ensureBrowser()` 和 `uploadFile()` 都有 fallback 逻辑处理。
+
+3. **`waitForSelector` 必须用 `state: 'attached'`**：file input 是 `display: none`，Playwright 默认等 `visible` 会超时。
+
+4. **必须通过浏览器**：oss_token → OSS PUT → callback → file/record/add 链路需要浏览器的 cookie/CSRF token。曾尝试用 Node.js fetch() 直传（commit cb9087b），OSS callback 拒绝非浏览器请求。
+
+5. **10 张图片限制**：Qwen 前端限制输入框最多 10 张图片。`uploadFile()` 末尾的清理代码会重置 file input value 并点击关闭按钮，防止累积触达上限。
+
 ## 要求
 
 - Node.js >= 22
