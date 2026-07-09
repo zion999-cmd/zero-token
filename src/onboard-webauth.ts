@@ -34,6 +34,8 @@ interface WebProvider {
   extraCookieNames?: string[];
   /** localStorage key to check */
   localStorageCheck?: string;
+  /** 授权前是否需要先清除该域名的 cookie（仅对有退登 bug 的平台启用） */
+  clearCookiesBeforeAuth?: boolean;
 }
 
 // ── 提供商定义 ────────────────────────────────────────
@@ -85,7 +87,7 @@ const PROVIDERS: WebProvider[] = [
   },
   {
     id: "qwen-web",
-    name: "Qwen CN",
+    name: "Qwen",
     url: "https://www.qianwen.com/chat/",
     authCookieNames: ["tongyi_sso_ticket", "cna"],
     extraCookieNames: ["XSRF-TOKEN", "b-user-id"],
@@ -96,6 +98,7 @@ const PROVIDERS: WebProvider[] = [
     url: "https://chatglm.cn",
     authCookieNames: ["chatglm_refresh_token", "chatglm_token"],
     extraCookieNames: ["chatglm_user_id"],
+    clearCookiesBeforeAuth: true, // GLM cookie 过期后页面无法正常退出
   },
   {
     id: "doubao-web",
@@ -294,8 +297,10 @@ async function authProvider(
   const context = browser.contexts()[0];
 
   try {
-    // 先清除该提供商的过期 cookie，确保干净重新登录
-    await clearCookiesForProvider(provider, onProgress);
+    // 仅对有退登 bug 的平台（如 GLM）清除过期 cookie
+    if (provider.clearCookiesBeforeAuth) {
+      await clearCookiesForProvider(provider, onProgress);
+    }
 
     // 先检查是否已经打开该页面
     const domain = new URL(provider.url).hostname.replace("www.", "");
