@@ -15,6 +15,10 @@ import { LruMap } from "../utils/lru-map.js";
 const conversationMap = new LruMap<string, string>(500);
 const parentMessageMap = new LruMap<string, string>(500);
 
+// Singleton client — creating a new ChatGPTWebClientBrowser per request leaks
+// Browser objects from chromium.connectOverCDP().
+let clientPromise: Promise<ChatGPTWebClientBrowser> | null = null;
+
 export function createChatGPTWebStreamFn(cookieOrJson: string): StreamFn {
   let options: string | ChatGPTWebClientOptions;
   try {
@@ -27,14 +31,18 @@ export function createChatGPTWebStreamFn(cookieOrJson: string): StreamFn {
   } catch {
     options = { accessToken: cookieOrJson };
   }
-  const client = new ChatGPTWebClientBrowser(options);
+  // Singleton: reuse client across requests to avoid Browser object leaks
+  if (!clientPromise) {
+    const client = new ChatGPTWebClientBrowser(options);
+    clientPromise = client.init().then(() => client);
+  }
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
 
     const run = async () => {
       try {
-        await client.init();
+        const client = await clientPromise!;
 
         const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
         let conversationId = conversationMap.get(sessionKey);

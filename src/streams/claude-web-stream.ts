@@ -15,6 +15,10 @@ import {
 import { LruMap } from "../utils/lru-map.js";
 const sessionMap = new LruMap<string, string>(500);
 
+// Singleton client — creating a new ClaudeWebClientBrowser per request leaks
+// Browser objects from chromium.connectOverCDP().
+let clientPromise: Promise<ClaudeWebClientBrowser> | null = null;
+
 export function createClaudeWebStreamFn(cookieOrJson: string): StreamFn {
   let options: ClaudeWebClientOptions;
   try {
@@ -23,14 +27,18 @@ export function createClaudeWebStreamFn(cookieOrJson: string): StreamFn {
   } catch {
     options = { cookie: cookieOrJson, sessionKey: "" };
   }
-  const client = new ClaudeWebClientBrowser(options);
+  // Singleton: reuse client across requests to avoid Browser object leaks
+  if (!clientPromise) {
+    const client = new ClaudeWebClientBrowser(options);
+    clientPromise = client.init().then(() => client);
+  }
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
 
     const run = async () => {
       try {
-        await client.init();
+        const client = await clientPromise!;
 
         const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
         let sessionId = sessionMap.get(sessionKey);

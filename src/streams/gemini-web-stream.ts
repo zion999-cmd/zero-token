@@ -14,6 +14,10 @@ import { stripInboundMeta } from "./strip-inbound-meta.js";
 import { LruMap } from "../utils/lru-map.js";
 const conversationMap = new LruMap<string, string>(500);
 
+// Singleton client — creating a new GeminiWebClientBrowser per request leaks
+// Browser objects from chromium.connectOverCDP().
+let clientPromise: Promise<GeminiWebClientBrowser> | null = null;
+
 export function createGeminiWebStreamFn(cookieOrJson: string): StreamFn {
   let options: GeminiWebClientOptions;
   try {
@@ -22,14 +26,18 @@ export function createGeminiWebStreamFn(cookieOrJson: string): StreamFn {
   } catch {
     options = { cookie: cookieOrJson, userAgent: "Mozilla/5.0" };
   }
-  const client = new GeminiWebClientBrowser(options);
+  // Singleton: reuse client across requests to avoid Browser object leaks
+  if (!clientPromise) {
+    const client = new GeminiWebClientBrowser(options);
+    clientPromise = client.init().then(() => client);
+  }
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
 
     const run = async () => {
       try {
-        await client.init();
+        const client = await clientPromise!;
 
         const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
         let conversationId = conversationMap.get(sessionKey);

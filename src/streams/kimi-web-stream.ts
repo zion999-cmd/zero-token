@@ -15,6 +15,10 @@ import { stripInboundMeta } from "./strip-inbound-meta.js";
 import { LruMap } from "../utils/lru-map.js";
 const sessionMap = new LruMap<string, string>(500);
 
+// Singleton client — creating a new KimiWebClientBrowser per request leaks
+// Browser objects from chromium.connectOverCDP().
+let clientPromise: Promise<KimiWebClientBrowser> | null = null;
+
 export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
   let options: KimiWebClientOptions;
   try {
@@ -23,14 +27,18 @@ export function createKimiWebStreamFn(cookieOrJson: string): StreamFn {
   } catch {
     options = { cookie: cookieOrJson, userAgent: "Mozilla/5.0" };
   }
-  const client = new KimiWebClientBrowser(options);
+  // Singleton: reuse client across requests to avoid Browser object leaks
+  if (!clientPromise) {
+    const client = new KimiWebClientBrowser(options);
+    clientPromise = client.init().then(() => client);
+  }
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
 
     const run = async () => {
       try {
-        await client.init();
+        const client = await clientPromise!;
 
         // Middleware (wrapWithToolCalling) always sends a single user message containing
         // the fully-formatted conversation history. Extract it directly — no session reuse.

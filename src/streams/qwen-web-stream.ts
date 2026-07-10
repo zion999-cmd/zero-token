@@ -16,32 +16,42 @@ import { LruMap } from "../utils/lru-map.js";
 
 const sessionStateMap = new LruMap<string, QwenSessionState>(500);
 
-export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
-  let options: QwenWebClientOptions;
+// Singleton client — creating a new QwenWebClientBrowser per request leaks
+// Browser objects from chromium.connectOverCDP() (258 requests × ~15MB = 4GB OOM).
+let clientPromise: Promise<QwenWebClientBrowser> | null = null;
+
+function parseOptions(cookieOrJson: string): QwenWebClientOptions {
   try {
     const parsed = JSON.parse(cookieOrJson);
-    // 支持完整选项或仅 cookie
     if (typeof parsed === "string") {
-      options = { sessionToken: parsed, cookie: parsed, userAgent: "Mozilla/5.0" };
-    } else {
-      options = {
-        sessionToken: parsed.sessionToken || parsed.cookie || "",
-        cookie: parsed.cookie || parsed.sessionToken || "",
-        userAgent: parsed.userAgent || "Mozilla/5.0",
-      };
+      return { sessionToken: parsed, cookie: parsed, userAgent: "Mozilla/5.0" };
     }
+    return {
+      sessionToken: parsed.sessionToken || parsed.cookie || "",
+      cookie: parsed.cookie || parsed.sessionToken || "",
+      userAgent: parsed.userAgent || "Mozilla/5.0",
+    };
   } catch {
-    // 如果不是 JSON，直接作为 sessionToken/cookie 使用
-    options = { sessionToken: cookieOrJson, cookie: cookieOrJson, userAgent: "Mozilla/5.0" };
+    return { sessionToken: cookieOrJson, cookie: cookieOrJson, userAgent: "Mozilla/5.0" };
   }
-  const client = new QwenWebClientBrowser(options);
+}
+
+export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
+  // Singleton: create the client once, reuse across all requests.
+  // Previously created a new QwenWebClientBrowser per request, each with
+  // its own chromium.connectOverCDP() → 258 requests × ~15MB leak = 4GB OOM.
+  if (!clientPromise) {
+    const options = parseOptions(cookieOrJson);
+    const client = new QwenWebClientBrowser(options);
+    clientPromise = client.init().then(() => client);
+  }
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
 
     const run = async () => {
       try {
-        await client.init();
+        const client = await clientPromise!;
 
         const messages = context.messages || [];
 

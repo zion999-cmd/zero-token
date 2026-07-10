@@ -15,6 +15,10 @@ import { stripInboundMeta } from "./strip-inbound-meta.js";
 import { LruMap } from "../utils/lru-map.js";
 const sessionMap = new LruMap<string, string>(500);
 
+// Singleton client — creating a new XiaomiMimoWebClientBrowser per request leaks
+// Browser objects from chromium.connectOverCDP().
+let clientPromise: Promise<XiaomiMimoWebClientBrowser> | null = null;
+
 export function createXiaomiMimoWebStreamFn(cookieOrJson: string): StreamFn {
   let options: XiaomiMimoWebClientOptions;
   try {
@@ -23,13 +27,18 @@ export function createXiaomiMimoWebStreamFn(cookieOrJson: string): StreamFn {
   } catch {
     options = { cookie: cookieOrJson };
   }
-  const client = new XiaomiMimoWebClientBrowser(options);
+  // Singleton: reuse client across requests to avoid Browser object leaks
+  if (!clientPromise) {
+    const client = new XiaomiMimoWebClientBrowser(options);
+    clientPromise = client.init().then(() => client);
+  }
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
 
     const run = async () => {
       try {
+        const client = await clientPromise!;
         const messages = context.messages;
         const sessionKey = model.id;
         const sessionId = sessionMap.get(sessionKey);

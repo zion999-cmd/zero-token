@@ -11,6 +11,10 @@ import { LruMap } from "../utils/lru-map.js";
 
 const sessionMap = new LruMap<string, string>(500);
 
+// Singleton client — creating a new ZWebClientBrowser per request leaks
+// Browser objects from chromium.connectOverCDP().
+let clientPromise: Promise<ZWebClientBrowser> | null = null;
+
 // Alias for compatibility
 export function createGlmWebStreamFn(cookieOrJson: string): StreamFn {
   return createZWebStreamFn(cookieOrJson);
@@ -24,14 +28,18 @@ export function createZWebStreamFn(cookieOrJson: string): StreamFn {
   } catch {
     options = { cookie: cookieOrJson, userAgent: "Mozilla/5.0" };
   }
-  const client = new ZWebClientBrowser(options);
+  // Singleton: reuse client across requests to avoid Browser object leaks
+  if (!clientPromise) {
+    const client = new ZWebClientBrowser(options);
+    clientPromise = client.init().then(() => client);
+  }
 
   return (model, context, streamOptions) => {
     const stream = createAssistantMessageEventStream();
 
     const run = async () => {
       try {
-        await client.init();
+        const client = await clientPromise!;
 
         // Middleware (wrapWithToolCalling) always sends a single user message containing
         // the fully-formatted conversation history. Extract it directly — no session reuse,
