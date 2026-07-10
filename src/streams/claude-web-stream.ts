@@ -12,7 +12,8 @@ import {
   type ClaudeWebClientOptions,
 } from "../providers/claude-web-client-browser.js";
 
-const sessionMap = new Map<string, string>();
+import { LruMap } from "../utils/lru-map.js";
+const sessionMap = new LruMap<string, string>(500);
 
 export function createClaudeWebStreamFn(cookieOrJson: string): StreamFn {
   let options: ClaudeWebClientOptions;

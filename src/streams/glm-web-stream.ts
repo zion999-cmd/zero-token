@@ -7,8 +7,9 @@ import {
   type ToolCall,
 } from "@mariozechner/pi-ai";
 import { ZWebClientBrowser, type ZWebClientOptions } from "../providers/glm-web-client-browser.js";
+import { LruMap } from "../utils/lru-map.js";
 
-const sessionMap = new Map<string, string>();
+const sessionMap = new LruMap<string, string>(500);
 
 // Alias for compatibility
 export function createGlmWebStreamFn(cookieOrJson: string): StreamFn {

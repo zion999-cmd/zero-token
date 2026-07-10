@@ -33,7 +33,8 @@ cmd_start() {
 
   echo "启动 Gateway..."
   cd "$SCRIPT_DIR"
-  nohup node --import tsx src/index.ts > "$LOG_FILE" 2>&1 &
+  nohup node --max-old-space-size=4096 --import tsx src/index.ts >> "$LOG_FILE" 2>&1 &
+  echo "$(date '+%Y-%m-%d %H:%M:%S') Gateway started (PID $!)" >> "$LOG_FILE"
   echo $! > "$PID_FILE"
 
   for i in $(seq 1 20); do

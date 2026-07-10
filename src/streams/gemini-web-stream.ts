@@ -11,7 +11,8 @@ import {
 } from "../providers/gemini-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
 
-const conversationMap = new Map<string, string>();
+import { LruMap } from "../utils/lru-map.js";
+const conversationMap = new LruMap<string, string>(500);
 
 export function createGeminiWebStreamFn(cookieOrJson: string): StreamFn {
   let options: GeminiWebClientOptions;

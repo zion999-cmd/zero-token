@@ -11,8 +11,9 @@ import {
 } from "../providers/chatgpt-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
 
-const conversationMap = new Map<string, string>();
-const parentMessageMap = new Map<string, string>();
+import { LruMap } from "../utils/lru-map.js";
+const conversationMap = new LruMap<string, string>(500);
+const parentMessageMap = new LruMap<string, string>(500);
 
 export function createChatGPTWebStreamFn(cookieOrJson: string): StreamFn {
   let options: string | ChatGPTWebClientOptions;

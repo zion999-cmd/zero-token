@@ -12,8 +12,9 @@ import {
   type QwenSessionState,
 } from "../providers/qwen-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
+import { LruMap } from "../utils/lru-map.js";
 
-const sessionStateMap = new Map<string, QwenSessionState>();
+const sessionStateMap = new LruMap<string, QwenSessionState>(500);
 
 export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
   let options: QwenWebClientOptions;

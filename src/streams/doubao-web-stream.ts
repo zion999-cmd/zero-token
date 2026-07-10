@@ -12,7 +12,8 @@ import {
 } from "../providers/doubao-web-client-browser.js";
 import { stripInboundMeta } from "./strip-inbound-meta.js";
 
-const sessionMap = new Map<string, string>();
+import { LruMap } from "../utils/lru-map.js";
+const sessionMap = new LruMap<string, string>(500);
 
 export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
   let options: DoubaoWebClientOptions;

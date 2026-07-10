@@ -13,6 +13,7 @@ import {
   DeepSeekWebClient,
   type DeepSeekWebClientOptions,
 } from "../providers/deepseek-web-client.js";
+import { LruMap } from "../utils/lru-map.js";
 
 // Helper to strip messages for web providers
 function stripForWebProvider(prompt: string): string {
@@ -20,8 +21,8 @@ function stripForWebProvider(prompt: string): string {
 }
 
 // Keep track of session IDs per session key to avoid creating too many web chat sessions
-const sessionMap = new Map<string, string>();
-const parentMessageMap = new Map<string, string | number>();
+const sessionMap = new LruMap<string, string>(500);
+const parentMessageMap = new LruMap<string, string | number>(500);
 
 type MessageContentPart = {
   type: string;

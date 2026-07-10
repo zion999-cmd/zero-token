@@ -8,7 +8,8 @@ import {
 } from "@mariozechner/pi-ai";
 import { getBrowser } from "../providers/browser-fetch.js";
 
-const conversationMap = new Map<string, string>();
+import { LruMap } from "../utils/lru-map.js";
+const conversationMap = new LruMap<string, string>(500);
 let cachedOrgId = "";
 
 async function getOrgId(): Promise<string> {
