@@ -106,6 +106,29 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
 
     // Stateless mode (tool / chatroom) — skip history building
     const ctxMode = (context as any).mode;
+    // Chat mode — only send the last user message, let upstream web manage its own history
+    if (ctxMode === 'chat') {
+      const lastUserMsg = [...messages].toReversed().find((m: {role: string}) => m.role === "user");
+      let prompt = "";
+      if (lastUserMsg) {
+        if (typeof lastUserMsg.content === "string") {
+          prompt = lastUserMsg.content;
+        } else if (Array.isArray(lastUserMsg.content)) {
+          prompt = (lastUserMsg.content as Array<{ type: string; text?: string }>)
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("");
+        }
+      }
+      prompt = stripInboundMeta(prompt);
+      if (!prompt) prompt = "Hi";
+      return streamFn(model, Object.assign({}, context, {
+        messages: [{ role: "user" as const, content: prompt }],
+        tools: [],
+        systemPrompt: "",
+      }), options);
+    }
+
     if (ctxMode === 'tool' || ctxMode === 'chatroom') {
       const systemPrompt = (context as any).systemPrompt || '';
       const msgList = [...messages];

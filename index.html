@@ -802,7 +802,7 @@ async function callLLM(messages, onDelta) {
   const cookie = getCookie();
   if (cookie) headers['x-cookie'] = cookie;
 
-  const body = { model: currentModel, messages, stream: true };
+  const body = { model: currentModel, messages, stream: true, mode: "chat" };
   if (toolsEnabled) body.tools = TEST_TOOLS;
 
   const resp = await fetch(API + '/v1/chat/completions', {
