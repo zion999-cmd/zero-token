@@ -231,17 +231,24 @@ export class ChatGPTWebClientBrowser {
 
       await new Promise((r) => setTimeout(r, pollIntervalMs));
 
-      const result = await page.evaluate(() => {
-        const clean = (t: string) => t.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+      // Use string-form page.evaluate to avoid esbuild __name helper injection
+      const rawResult = await page.evaluate(`(() => {
+        const clean = (t) => t.replace(/[\\u200B-\\u200D\\uFEFF]/g, "").trim();
         const els = document.querySelectorAll(
-          'div[data-message-author-role="assistant"], .agent-turn [data-message-author-role="assistant"], [class*="markdown"], [class*="assistant"]',
+          'div[data-message-author-role="assistant"], .agent-turn [data-message-author-role="assistant"], [class*="markdown"], [class*="assistant"]'
         );
         const last = els.length > 0 ? els[els.length - 1] : null;
-        const text = last ? clean(last.textContent ?? "") : "";
+        const text = last ? clean(last.textContent || "") : "";
         const stopBtn = document.querySelector('button.bg-black .icon-lg, [aria-label*="Stop"]');
         const isStreaming = !!stopBtn;
-        return { text, isStreaming };
-      });
+        return JSON.stringify({ text, isStreaming });
+      })()`);
+      let result: { text: string; isStreaming: boolean };
+      try {
+        result = JSON.parse(rawResult);
+      } catch {
+        result = { text: "", isStreaming: false };
+      }
 
       if (result.text && result.text !== lastText) {
         lastText = result.text;
@@ -253,6 +260,7 @@ export class ChatGPTWebClientBrowser {
         }
       }
     }
+
 
     if (!lastText) {
       throw new Error(
@@ -283,215 +291,21 @@ export class ChatGPTWebClientBrowser {
     model?: string;
     signal?: AbortSignal;
   }): Promise<ReadableStream<Uint8Array>> {
-    const { page } = await this.ensureBrowser();
-
-    const conversationId = params.conversationId || randomUUID();
-    const parentMessageId = params.parentMessageId || randomUUID();
-    const messageId = randomUUID();
+    await this.ensureBrowser();
 
     console.log(`[ChatGPT Web Browser] Sending message`);
-    console.log(`[ChatGPT Web Browser] Conversation ID: ${conversationId}`);
+    console.log(`[ChatGPT Web Browser] Conversation ID: ${params.conversationId || "new"}`);
     console.log(`[ChatGPT Web Browser] Model: ${params.model || "gpt-4"}`);
 
-    const body = {
-      action: "next",
-      messages: [
-        {
-          id: messageId,
-          author: { role: "user" },
-          content: {
-            content_type: "text",
-            parts: [params.message],
-          },
-        },
-      ],
-      parent_message_id: parentMessageId,
-      model: params.model || "gpt-4",
-      timezone_offset_min: new Date().getTimezoneOffset(),
-      conversation_id: conversationId === "new" ? undefined : conversationId,
-      history_and_training_disabled: false,
-      conversation_mode: { kind: "primary_assistant", plugin_ids: null },
-      force_paragen: false,
-      force_paragen_model_slug: "",
-      force_rate_limit: false,
-      reset_rate_limits: false,
-      force_use_sse: true,
-    };
-
-    const pageUrl = page.url();
-
-    const responseData = await page.evaluate(
-      async ({ body, pageUrl }) => {
-        const baseHeaders = (accessToken: string | undefined, deviceId: string) => ({
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          "oai-device-id": deviceId,
-          "oai-language": "en-US",
-          Referer: pageUrl || "https://chatgpt.com/",
-          "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-          "sec-ch-ua-mobile": "?0",
-          "sec-ch-ua-platform": '"macOS"',
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        });
-
-        async function warmupSentinel(accessToken: string | undefined, deviceId: string) {
-          const h = baseHeaders(accessToken, deviceId);
-          await fetch("https://chatgpt.com/backend-api/conversation/init", {
-            method: "POST",
-            headers: h,
-            body: "{}",
-            credentials: "include",
-          }).catch(() => {});
-          await fetch("https://chatgpt.com/backend-api/sentinel/chat-requirements/prepare", {
-            method: "POST",
-            headers: h,
-            body: "{}",
-            credentials: "include",
-          }).catch(() => {});
-          await fetch("https://chatgpt.com/backend-api/sentinel/chat-requirements/finalize", {
-            method: "POST",
-            headers: h,
-            body: "{}",
-            credentials: "include",
-          }).catch(() => {});
-        }
-
-        async function getSession() {
-          const r = await fetch("https://chatgpt.com/api/auth/session", { credentials: "include" });
-          return r.ok ? r.json() : null;
-        }
-
-        async function tryFetchWithSentinel(accessToken: string | undefined, deviceId: string) {
-          // Warm up sentinel endpoints before the real request
-          await warmupSentinel(accessToken, deviceId);
-          const scripts = Array.from(document.scripts);
-          const assetSrc = scripts
-            .map((s) => s.src)
-            .find((s) => s?.includes("oaistatic.com") && s.endsWith(".js"));
-          const assetUrl = assetSrc || "https://cdn.oaistatic.com/assets/i5bamk05qmvsi6c3.js";
-
-          try {
-            const g = await import(/* @vite-ignore */ assetUrl);
-            if (typeof g.bk !== "function" || typeof g.fX !== "function") {
-              return { error: `Sentinel asset missing bk/fX (asset: ${assetUrl})` };
-            }
-            const z = await g.bk();
-            const turnstileKey = z?.turnstile?.bx ?? z?.turnstile?.dx;
-            if (!turnstileKey) {
-              return { error: "Sentinel chat-requirements missing turnstile" };
-            }
-            const r = await g.bi(turnstileKey);
-            let arkose: unknown = null;
-            try {
-              arkose = await g.bl?.getEnforcementToken?.(z);
-            } catch {
-              // Arkose may fail (captcha), continue with null
-            }
-            let p: unknown = null;
-            try {
-              p = await g.bm?.getEnforcementToken?.(z);
-            } catch {
-              // Proof token may fail, continue with null
-            }
-            const extraHeaders = await g.fX(z, arkose, r, p, null);
-
-            const headers: Record<string, string> = {
-              ...baseHeaders(accessToken, deviceId),
-              ...(typeof extraHeaders === "object" ? extraHeaders : {}),
-            };
-
-            const res = await fetch("https://chatgpt.com/backend-api/conversation", {
-              method: "POST",
-              headers,
-              body: JSON.stringify(body),
-              credentials: "include",
-            });
-            return { res };
-          } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : String(e);
-            return { error: `Sentinel token failed: ${msg}` };
-          }
-        }
-
-        const session = await getSession();
-        const accessToken = session?.accessToken;
-        const deviceId =
-          (session as { oaiDeviceId?: string })?.oaiDeviceId ??
-          globalThis.crypto?.randomUUID?.() ??
-          Math.random().toString(36).slice(2);
-
-        const sentinelResult = await tryFetchWithSentinel(accessToken, deviceId);
-        const res =
-          sentinelResult.res ??
-          (await fetch("https://chatgpt.com/backend-api/conversation", {
-            method: "POST",
-            headers: baseHeaders(accessToken, deviceId),
-            body: JSON.stringify(body),
-            credentials: "include",
-          }));
-
-        const sentinelError = "error" in sentinelResult ? sentinelResult.error : undefined;
-
-        if (!res.ok) {
-          const errorText = await res.text();
-          return { ok: false, status: res.status, error: errorText, sentinelError };
-        }
-
-        const reader = res.body?.getReader();
-        if (!reader) {
-          return { ok: false, status: 500, error: "No response body", sentinelError };
-        }
-
-        const decoder = new TextDecoder();
-        let fullText = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-          fullText += decoder.decode(value, { stream: true });
-        }
-        return { ok: true, data: fullText };
-      },
-      { body, pageUrl },
-    );
-
-    if (!responseData.ok) {
-      if (responseData.status === 403) {
-        console.log(
-          "[ChatGPT Web Browser] 403 风控，尝试 DOM 模拟 fallback（请求由真实浏览器发起，不易触发风控）",
-        );
-        return this.chatCompletionsViaDOM({
-          message: params.message,
-          signal: params.signal,
-        });
-      }
-      if (responseData.status === 401) {
-        throw new Error("ChatGPT 认证失败，请重新运行 ./onboard.sh 刷新 session。");
-      }
-      const sentinelHint = responseData.sentinelError
-        ? ` Sentinel: ${responseData.sentinelError}`
-        : " 若持续 403，需在 chatgpt.com 控制台检查 oaistatic 脚本导出名是否变更。";
-      throw new Error(
-        `ChatGPT API 错误 ${responseData.status}: ${responseData.error?.slice(0, 200) || ""}${sentinelHint}`,
-      );
-    }
-
-    console.log(`[ChatGPT Web Browser] Response length: ${responseData.data?.length || 0} bytes`);
-    const sample = responseData.data?.slice(0, 1800) ?? "";
-    console.log(
-      `[ChatGPT Web Browser] SSE sample:\n${sample}${(responseData.data?.length ?? 0) > 1800 ? "\n...(truncated)" : ""}`,
-    );
-
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(encoder.encode(responseData.data));
-        controller.close();
-      },
+    // Since ChatGPT removed oaistatic scripts from the page (~2025-07),
+    // the sentinel-based API path is broken (returns 403 "Unusual activity").
+    // DOM simulation is the only reliable approach — it types directly
+    // into the ChatGPT browser page and polls for the response.
+    console.log(`[ChatGPT Web Browser] Using DOM simulation (sentinel API path is obsolete)`);
+    return this.chatCompletionsViaDOM({
+      message: params.message,
+      signal: params.signal,
     });
-
-    return stream;
   }
 
   async close() {
