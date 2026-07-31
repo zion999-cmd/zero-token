@@ -258,6 +258,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
       res.setHeader('x-request-id', chatId);
 
       let streamContent = '';
+      let streamDone = false;
       let currentToolCalls: Array<{ index: number; id: string; name: string; arguments: string }> = [];
       for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
         const evt = event as { type: string; delta?: string; contentIndex?: number; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
@@ -297,6 +298,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
             choices: [{ index: 0, delta: { tool_calls: [{ index: (currentToolCalls.length - 1), function: { arguments: evt.delta || '' } }] }, finish_reason: null }],
           })}\n\n`);
         } else if (evt.type === 'done') {
+          streamDone = true;
           const stopReason = (evt as Record<string, unknown>).stopReason as string || 'stop';
           const finishReason = stopReason === 'toolUse' ? 'tool_calls' : stopReason;
           res.write(`data: ${JSON.stringify({
@@ -309,7 +311,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         }
       }
       // If stream ended without a done event, send one
-      if (!res.writableEnded) {
+      if (!streamDone && !res.writableEnded) {
         res.write(`data: ${JSON.stringify({
           id: chatId, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
