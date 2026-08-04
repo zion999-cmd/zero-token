@@ -212,10 +212,18 @@ export class ChatGPTWebClientBrowser {
 
     await inputHandle.click();
     await page.waitForTimeout(300);
-    await page.keyboard.type(params.message, { delay: 20 });
+
+    // CDP Input.insertText — injects text atomically, no clipboard pollution.
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send("Input.insertText", { text: params.message });
+    } finally {
+      await cdp.detach();
+    }
+    console.log(`[ChatGPT Web Browser] DOM: CDP insertText ${params.message.length} chars`);
+
     await page.waitForTimeout(500);
     await page.keyboard.press("Enter");
-    console.log("[ChatGPT Web Browser] DOM: typed message and pressed Enter");
 
     // 轮询等待回复完成（最多约 90 秒，降低频率减少封号风险）
     const maxWaitMs = 90000;
