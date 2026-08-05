@@ -67,6 +67,36 @@ Authorization: Bearer sk-my-secret-key
 x-api-key: sk-my-secret-key
 ```
 
+## 保护机制（防网关被无休止请求累死）
+
+网关内置两层防护，全部**零依赖**手写实现，可通过环境变量调参：
+
+### 1. 每-IP 限流（滑动窗口）
+
+每个客户端 IP 在时间窗口内最多 `RATE_LIMIT_MAX` 次请求，超出返回 `429`。
+
+```bash
+RATE_LIMIT_WINDOW_MS=60000   # 窗口长度（毫秒），默认 60s
+RATE_LIMIT_MAX=30            # 每窗口每 IP 上限，默认 30
+```
+
+### 2. 并发控制 + 过载丢弃（按 provider）
+
+每个 provider（如 `chatgpt-web`）共享一个浏览器页面，因此：
+
+- 同一时间最多接受 `PROVIDER_CONCURRENCY` 个在途请求（默认 5，即"网络承载能力"）
+- 浏览器实际操作**严格串行**（单个 page 一次只能做一件事，避免导航/输入/轮询互相抢占）
+- 队列深度超过 `MAX_QUEUE_DEPTH` 时，新请求被**静默丢弃**——`req.destroy()` 直接断开 TCP，不写任何响应字节（相比返回 503，丢弃几乎不消耗 CPU，防止"拒绝洪水"本身成为攻击面）
+
+```bash
+PROVIDER_CONCURRENCY=5   # 每 provider 最大在途请求数，默认 5
+MAX_QUEUE_DEPTH=10       # 排队超过此数即丢弃，默认 10
+```
+
+聊天/工具调用的流式请求被丢弃时表现为连接重置（客户端侧 `ECONNRESET`）；会话列表等只读端点被丢弃时返回 `503`。
+
+> 注意：provider 客户端当前是**单页**模型，所以"5 个并发"实际是 5 个请求被接受后排队串行执行。若要让多个 session 真正并行操作浏览器，需要为每个并发请求分配独立页面（后续可做）。
+
 ## 管理命令
 
 ```bash

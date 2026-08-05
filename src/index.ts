@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import fs from 'node:fs';
 import { getWebStreamFactory, listWebStreamApiIds } from './streams/web-stream-factories.js';
 import { setDebugEnabled, debugLog } from './debug-log.js';
+import { runWithLimit, ShedLoad } from './concurrency-limiter.js';
+import { createRateLimiter } from './rate-limiter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,6 +71,17 @@ const API_KEY = loadApiKey();
 setDebugEnabled(loadDebugFlag() || process.env.DEBUG_SSE === '1');
 
 const app = express();
+
+// ── Rate limiting (per-IP sliding window) ─────────────
+// Mounted before body parsing so a flood of huge requests is rejected cheaply.
+app.use(
+  '/v1',
+  createRateLimiter({
+    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60_000,
+    max: Number(process.env.RATE_LIMIT_MAX) || 30,
+  }),
+);
+
 // ── Request tracing (BEFORE body parser to catch large requests) ─
 app.use((req: Request, res: Response, next) => {
   if (!req.path.startsWith('/v1/')) return next();
@@ -252,6 +265,14 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     logRequest({ event: 'req', id: chatId, model: apiId, msgs: msgCount, stream, tools: !!(tools?.length) });
 
     if (stream) {
+      const upstream = await runWithLimit(apiId, conversation_id, () =>
+        Promise.resolve(streamFn(modelArg, context, {})));
+      if (upstream === ShedLoad) {
+        console.log(`[Concurrency] shed /v1/chat/completions stream ${apiId}`);
+        req.destroy();
+        return;
+      }
+
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -260,7 +281,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
       let streamContent = '';
       let streamDone = false;
       let currentToolCalls: Array<{ index: number; id: string; name: string; arguments: string }> = [];
-      for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
+      for await (const event of upstream) {
         const evt = event as { type: string; delta?: string; contentIndex?: number; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
         if (evt.type === 'thinking_delta') {
           res.write(`data: ${JSON.stringify({
@@ -326,7 +347,15 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
       let errorMsg = '';
       const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
-      for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
+      const upstream = await runWithLimit(apiId, conversation_id, () =>
+        Promise.resolve(streamFn(modelArg, context, {})));
+      if (upstream === ShedLoad) {
+        console.log(`[Concurrency] shed /v1/chat/completions ${apiId}`);
+        req.destroy();
+        return;
+      }
+
+      for await (const event of upstream) {
         const evt = event as {
           type: string; delta?: string;
           message?: { content?: Array<{ type: string; text?: string; thinking?: string; name?: string; arguments?: Record<string, unknown>; id?: string }>; stopReason?: string };
@@ -519,6 +548,14 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     logRequest({ event: "req", id: msgId, model: apiId, api: "anthropic", msgs: (messages as Array<unknown>).length, stream, tools: !!(toolsRaw?.length) });
 
     if (stream) {
+      const upstream = await runWithLimit(apiId, undefined, () =>
+        Promise.resolve(streamFn(modelArg, context, {})));
+      if (upstream === ShedLoad) {
+        console.log(`[Concurrency] shed /v1/messages stream ${apiId}`);
+        req.destroy();
+        return;
+      }
+
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -542,7 +579,7 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
         thinkingBlockOpen = false;
       };
 
-      for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
+      for await (const event of upstream) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> } };
         debugLog('upstream', { id: msgId, evtType: evt.type, deltaLen: evt.delta?.length ?? 0, deltaPreview: evt.delta?.slice(0, 80) });
         if (evt.type === 'thinking_delta' && evt.delta) {
@@ -604,7 +641,14 @@ app.post('/v1/messages', async (req: Request, res: Response) => {
     } else {
       let fullContent = '', fullThinking = '', finishReason = 'stop';
       const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
-      for await (const event of await Promise.resolve(streamFn(modelArg, context, {}))) {
+      const upstream = await runWithLimit(apiId, undefined, () =>
+        Promise.resolve(streamFn(modelArg, context, {})));
+      if (upstream === ShedLoad) {
+        console.log(`[Concurrency] shed /v1/messages ${apiId}`);
+        req.destroy();
+        return;
+      }
+      for await (const event of upstream) {
         const evt = event as { type: string; delta?: string; toolCall?: { id: string; name: string; arguments: Record<string, unknown> }; message?: { content?: Array<{ type: string; text?: string; thinking?: string; name?: string; arguments?: Record<string, unknown>; id?: string }>; stopReason?: string }; stopReason?: string };
         if (evt.type === 'text_delta') fullContent += evt.delta || '';
         else if (evt.type === 'thinking_delta') fullThinking += evt.delta || '';
