@@ -158,13 +158,11 @@ export class KimiWebClientBrowser {
       });
       const cookies = rawCookies.filter((c): c is NonNullable<typeof c> => c !== null);
       if (cookies.length > 0) {
-        try {
-          await this.browser.addCookies(cookies);
-        } catch (err) {
-          console.warn(
-            `[Kimi Web] addCookies failed (page may already have session): ${err instanceof Error ? err.message : String(err)}`,
-          );
+        let _ok = 0, _fail = 0;
+        for (const _c of cookies) {
+          try { await this.browser.addCookies([_c]); _ok++; } catch { _fail++; }
         }
+        if (_ok > 0 || _fail > 0) console.log('[Kimi Web] cookies:', _ok, 'injected,', _fail, 'skipped');
       }
     }
 

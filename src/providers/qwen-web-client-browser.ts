@@ -240,7 +240,11 @@ export class QwenWebClientBrowser {
       };
     });
 
-    await this.browser.addCookies(cookies);
+    let _ok = 0, _fail = 0;
+    for (const _c of cookies) {
+      try { await this.browser.addCookies([_c]); _ok++; } catch { _fail++; }
+    }
+    if (_ok > 0 || _fail > 0) console.log('[Qwen Web Browser] cookies:', _ok, 'injected,', _fail, 'skipped');
 
     // Ensure the page is ready: Qwen CN creates the hidden file input
     // dynamically via "添加附件" → "上传图片" dropdown. Trigger it once

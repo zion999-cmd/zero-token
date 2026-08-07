@@ -147,13 +147,11 @@ export class ChatGPTWebClientBrowser {
       });
       const cookies = rawCookies.filter((c) => c.name.length > 0);
       if (cookies.length > 0) {
-        try {
-          await this.browser.addCookies(cookies);
-        } catch (err) {
-          console.warn(
-            `[ChatGPT Web Browser] addCookies failed (page may already have session): ${err instanceof Error ? err.message : String(err)}`,
-          );
+        let _ok = 0, _fail = 0;
+        for (const _c of cookies) {
+          try { await this.browser.addCookies([_c]); _ok++; } catch { _fail++; }
         }
+        if (_ok > 0 || _fail > 0) console.log('[ChatGPT Web Browser] cookies:', _ok, 'injected,', _fail, 'skipped');
       }
     }
 

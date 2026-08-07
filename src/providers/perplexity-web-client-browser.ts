@@ -117,11 +117,11 @@ export class PerplexityWebClientBrowser {
 
     const cookies = this.parseCookies();
     if (cookies.length > 0) {
-      try {
-        await this.context.addCookies(cookies);
-      } catch (e) {
-        console.warn("[Perplexity Web Browser] Failed to add some cookies:", e);
+      let _ok = 0, _fail = 0;
+      for (const _c of cookies) {
+        try { await this.context.addCookies([_c]); _ok++; } catch { _fail++; }
       }
+      if (_ok > 0 || _fail > 0) console.log('[Perplexity Web Browser] cookies:', _ok, 'injected,', _fail, 'skipped');
     }
 
     this.initialized = true;

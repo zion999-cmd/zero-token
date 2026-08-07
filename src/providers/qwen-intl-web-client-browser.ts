@@ -176,13 +176,11 @@ export class QwenIntlWebClientBrowser {
       .filter((c) => c.name.length > 0);
 
     if (cookies.length > 0) {
-      try {
-        await browserForCookies.addCookies(cookies);
-      } catch (err) {
-        console.warn(
-          `[Qwen Intl Web Browser] addCookies failed (page may already have session): ${err instanceof Error ? err.message : String(err)}`,
-        );
+      let _ok = 0, _fail = 0;
+      for (const _c of cookies) {
+        try { await browserForCookies.addCookies([_c]); _ok++; } catch { _fail++; }
       }
+      if (_ok > 0 || _fail > 0) console.log('[Qwen Intl Web Browser] cookies:', _ok, 'injected,', _fail, 'skipped');
     }
 
     return { browser: this.browser, page: this.page };

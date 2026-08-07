@@ -60,9 +60,7 @@ export class DoubaoWebClientBrowser {
         if (k?.trim() === "ttwid" && !this.ttwid) this.ttwid = v?.trim();
       }
     }
-    if (!this.sessionid) {
-      throw new Error("Doubao sessionid is required");
-    }
+    if (!this.sessionid) { console.warn("[Doubao Web Browser] sessionid not found in cookie"); this.sessionid = ""; }
     if (!this.cookie) {
       throw new Error("Doubao cookie could not be built");
     }
@@ -169,7 +167,11 @@ export class DoubaoWebClientBrowser {
       };
     });
 
-    await this.browser.addCookies(cookies);
+    let _ok = 0, _fail = 0;
+    for (const _c of cookies) {
+      try { await this.browser.addCookies([_c]); _ok++; } catch { _fail++; }
+    }
+    if (_ok > 0 || _fail > 0) console.log('[Doubao Web Browser] cookies:', _ok, 'injected,', _fail, 'skipped');
 
     return { browser: this.browser, page: this.page };
   }

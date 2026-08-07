@@ -164,7 +164,11 @@ export class ClaudeWebClientBrowser {
     });
 
     if (this.browser) {
-      await this.browser.addCookies(cookies);
+      let _ok = 0, _fail = 0;
+      for (const _c of cookies) {
+        try { await this.browser.addCookies([_c]); _ok++; } catch { _fail++; }
+      }
+      if (_ok > 0 || _fail > 0) console.log('[Claude Web Browser] cookies:', _ok, 'injected,', _fail, 'skipped');
     }
 
     if (!this.browser || !this.page) {

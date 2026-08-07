@@ -117,9 +117,11 @@ export class XiaomiMimoWebClientBrowser {
       .filter((c) => c.name.length > 0);
 
     if (rawCookies.length > 0) {
-      try {
-        await this.browser.addCookies(rawCookies);
-      } catch {}
+      let _ok = 0, _fail = 0;
+      for (const _c of rawCookies) {
+        try { await this.browser.addCookies([_c]); _ok++; } catch { _fail++; }
+      }
+      if (_ok > 0 || _fail > 0) console.log('[XiaomiMo Web Browser] cookies:', _ok, 'injected,', _fail, 'skipped');
     }
 
     return { browser: this.browser, page: this.page };
