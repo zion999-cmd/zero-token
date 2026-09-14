@@ -214,6 +214,10 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
               if (part.type === "image" && "image" in part) {
                 const img = part as { image: string };
                 imageUrls.push(img.image);
+              } else if (part.type === "image_url" && "image_url" in part) {
+                // Standard OpenAI format (gateway clients send this).
+                const img = part as { image_url?: { url?: string } };
+                if (img.image_url?.url) imageUrls.push(img.image_url.url);
               }
             }
           }
@@ -264,8 +268,8 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
               );
             }
           }
-          // 图片模式下使用 vision 模型类型
-          modelType = "vision";
+          // model_type left unset: explicit "vision"/"default" both ended in
+          // server-side generation timeouts on the current web build.
         }
 
         const responseStream = await client.chatCompletions({

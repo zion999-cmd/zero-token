@@ -342,17 +342,28 @@ export class DeepSeekWebClient {
       }),
     ).toString("base64");
 
+    const mimeByExt: Record<string, string> = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      webp: "image/webp",
+      gif: "image/gif",
+    };
+    const mimeType = mimeByExt[fileName.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
     const formData = new (globalThis as unknown as { FormData: new () => FormData }).FormData();
-    formData.append(
-      "file",
-      new (globalThis as unknown as { Blob: new (p: unknown[]) => Blob }).Blob([fileData]),
-      fileName,
-    );
+    const BlobCtor = (globalThis as unknown as {
+      Blob: new (p: unknown[], o?: { type: string }) => Blob;
+    }).Blob;
+    formData.append("file", new BlobCtor([fileData], { type: mimeType }), fileName);
 
+    // Omit Content-Type so undici generates the multipart boundary itself;
+    // fetchHeaders() hardcodes application/json, which yields an invalid
+    // multipart request without a boundary.
+    const { "Content-Type": _omittedContentType, ...uploadHeaders } = await this.fetchHeaders();
     const res = await fetch(`https://chat.deepseek.com${targetPath}`, {
       method: "POST",
       headers: {
-        ...(await this.fetchHeaders()),
+        ...uploadHeaders,
         "x-ds-pow-response": powResponse,
         "x-file-size": fileData.length.toString(),
       },
