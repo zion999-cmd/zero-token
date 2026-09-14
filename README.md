@@ -2,7 +2,7 @@
 
 免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI / Anthropic 兼容的 API**。
 
-> **状态：** 7 个供应商可用。OpenAI API 稳定。Anthropic API（`/v1/messages`）**已稳定支持 Claude Code**——工具调用、思考块、多轮对话、多步文件写入均可正常工作。DeepSeek 作为后端经过大量测试，是目前最推荐的 Claude Code 后端。
+> **状态：** 7 个供应商实测可用（2026-09-15）。OpenAI API 稳定。Anthropic API（`/v1/messages`）**已稳定支持 Claude Code**——工具调用、思考块、多轮对话、多步文件写入均可正常工作。DeepSeek 作为后端经过大量测试，是目前最推荐的 Claude Code 后端。
 > 
 > `express.json({limit:'50mb'})` 是必须的——Claude Code 的请求体可达 160KB+。
 
@@ -10,17 +10,20 @@
 
 | 供应商 | 聊天 | 工具调用 | 图片识别 | 方式 |
 |--------|------|---------|---------|------|
-| DeepSeek | ✅ | ✅ | ✅ | 纯 HTTP API (含 PoW 解题), 图片通过 vision 模式 |
-| Claude | ✅ | ✅ | — | 浏览器内 API (绕过 Cloudflare) |
-| Kimi | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 Node.js 直传 |
-| ChatGLM | ✅ | ✅ | ⚠️ | 浏览器客户端 (attach), 图片通过 image_url 格式 (待测试) |
-| Qwen 国内版 | ✅ | ✅ | ✅ | 浏览器客户端 (attach), 图片通过 CDP 上传至 OSS |
-| Qwen 国际版 | ✅ | ✅ | ⚠️ | 浏览器客户端 (page.evaluate), chat.qwen.ai, 文件上传可用，chat 端图片格式待适配 |
-| Grok | ✅ | ⚠️ | — | DOM 交互 (anti-bot 绕过) |
-| Doubao | ✅ | ⚠️ | — | 浏览器客户端 (间歇可用) |
-| ChatGPT | ⚠️ | — | — | 需先登录 |
-| Gemini | ❌ | — | — | 地区限制 |
+| DeepSeek | ✅ | ✅ | ⚠️ | 纯 HTTP API (含 PoW 解题)；图片可上传，上游生成超时（疑似 `ref_file_ids` 协议变更，待抓包确认） |
+| Claude | ❌ | ❌ | — | 账号被封：上游返回 `organization_disabled`，需更换账号 |
+| Kimi | ✅ | ✅ | ✅ | 浏览器客户端 (attach)，图片 Node.js 直传；access_token (~15 分钟) 过期时用 refresh_token 经 auth.kimi.com 自动换新（2026-09-15 实测全通过） |
+| ChatGLM | ✅ | ✅ | ⚠️ | 浏览器客户端 (attach)；data URI 图片未接入（模型回复"没看到图片"） |
+| Qwen 国内版 | ✅ | ✅ | ✅ | 浏览器客户端 (attach)，图片通过 CDP 上传至 OSS（实测全通过） |
+| Qwen 国际版 | ⚠️ | — | ⚠️ | 浏览器客户端 (page.evaluate)，chat.qwen.ai；上游流解析 0 part，待排查 |
+| Grok | ⚠️ | ⚠️ | — | DOM 交互 (anti-bot 绕过)；实测"找不到输入框"，选择器待更新 |
+| Doubao | ✅ | ⚠️ | — | 浏览器客户端 (间歇可用)；工具调用标签解析异常（裸 `</tool_call>`） |
+| ChatGPT | ⚠️ | — | — | DOM 模拟；实测轮询超时，需页面已登录且停留在 chatgpt.com |
+| Gemini | ✅ | — | — | DOM 模拟；2026-09 修复 `__name` 崩溃 + 旧回答污染后实测可用（非地区限制） |
+| Perplexity | ✅ | — | — | DOM 模拟；2026-09 修复 `__name` 崩溃 + 提问文本误抓后实测可用 |
 | 其他 | ⚠️ | — | — | 待测试 |
+
+> 能力矩阵实测于 2026-09-15（`/tmp/gateway-matrix-test.py`，聊天 / 工具 / 图片三维度）。⚠️/❌ 中部分是账号或登录态问题（Claude、Kimi），部分是上游页面/协议漂移（Grok、Qwen 国际版、DeepSeek 图片）。
 
 ## 快速开始
 
