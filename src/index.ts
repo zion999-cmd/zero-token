@@ -265,7 +265,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     logRequest({ event: 'req', id: chatId, model: apiId, msgs: msgCount, stream, tools: !!(tools?.length) });
 
     if (stream) {
-      const upstream = await runWithLimit(apiId, conversation_id, () =>
+      const upstream = await runWithLimit(apiId, undefined, () =>
         Promise.resolve(streamFn(modelArg, context, {})));
       if (upstream === ShedLoad) {
         console.log(`[Concurrency] shed /v1/chat/completions stream ${apiId}`);
@@ -347,7 +347,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
       let errorMsg = '';
       const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
-      const upstream = await runWithLimit(apiId, conversation_id, () =>
+      const upstream = await runWithLimit(apiId, undefined, () =>
         Promise.resolve(streamFn(modelArg, context, {})));
       if (upstream === ShedLoad) {
         console.log(`[Concurrency] shed /v1/chat/completions ${apiId}`);
