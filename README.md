@@ -406,7 +406,10 @@ curl -X POST http://127.0.0.1:3001/v1/responses \
   }'
 ```
 
-合规测试：`./test-responses-api.sh [base_url] [api_key]`
+- 支持 `developer` 角色（归入 system/instructions 层级，不降级为 user）
+- 上游流未正常结束（EOF 无 done）时状态为 `incomplete`（`incomplete_details.reason:"upstream_ended"`），不伪装 completed
+- 合规测试：`./test-responses-api.sh [base_url] [api_key]`
+- 归一化确定性单测（input_image 字符串形态、developer、tool output、终态判定）：`npm test`
 
 ### `GET /health`
 

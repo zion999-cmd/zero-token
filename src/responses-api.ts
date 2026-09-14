@@ -51,6 +51,32 @@ function textOfContent(content: unknown): string {
 }
 
 /**
+ * Flatten a function_call_output `output` to text the model can read.
+ * Strings pass through; content arrays contribute their text parts (image /
+ * file parts have no textual channel yet and are dropped); anything else is
+ * JSON-stringified so we never feed raw protocol-object noise verbatim.
+ */
+function toolOutputToText(output: unknown): string {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    const texts = output
+      .map((p) => {
+        if (typeof p === 'string') return p;
+        const part = (p ?? {}) as Json;
+        return typeof part.text === 'string' &&
+          (part.type === 'input_text' || part.type === 'output_text' || part.type === 'text' || part.type === undefined)
+          ? part.text
+          : '';
+      })
+      .filter((t) => t !== '');
+    // No extractable text (e.g. image/file-only result): preserve the payload
+    // rather than feeding the model an empty tool result.
+    return texts.length > 0 ? texts.join('\n') : JSON.stringify(output ?? '');
+  }
+  return JSON.stringify(output ?? '');
+}
+
+/**
  * Convert Responses `input` (string | item array) into the Anthropic/pi-ai
  * block shapes the tool middleware actually understands (tool_use /
  * tool_result). Also tolerates OpenAI chat-format items (role:'tool',
@@ -82,7 +108,7 @@ export function normalizeResponsesInput(input: unknown): InternalMessage[] {
 
     // Responses function_call_output → user tool_result block
     if (item.type === 'function_call_output') {
-      const output = typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? '');
+      const output = toolOutputToText(item.output);
       out.push({
         role: 'user',
         content: [{
@@ -144,12 +170,17 @@ export function normalizeResponsesInput(input: unknown): InternalMessage[] {
           if (typeof part.text === 'string') parts.push({ type: 'text', text: part.text });
         } else if (pt === 'input_image' || pt === 'image_url') {
           // Only the last user turn's images survive the middleware pipeline.
+          // Standard Responses form: image_url is a bare string (URL or data
+          // URI). Chat-completions form {image_url:{url}} is also tolerated.
+          const rawUrl = part.image_url;
           const url =
-            typeof (part.image_url as Json)?.url === 'string'
-              ? ((part.image_url as Json).url as string)
-              : typeof part.image === 'string'
-                ? part.image
-                : '';
+            typeof rawUrl === 'string'
+              ? rawUrl
+              : typeof (rawUrl as Json)?.url === 'string'
+                ? ((rawUrl as Json).url as string)
+                : typeof part.image === 'string'
+                  ? part.image
+                  : '';
           if (url) parts.push({ type: 'image_url', image_url: { url } });
         }
         // Unknown part types are ignored.
@@ -159,7 +190,8 @@ export function normalizeResponsesInput(input: unknown): InternalMessage[] {
     if (parts.length === 0) continue;
     if (role === 'assistant') {
       out.push({ role: 'assistant', content: parts });
-    } else if (role === 'system') {
+    } else if (role === 'system' || role === 'developer') {
+      // Responses 'developer' is an instruction-tier role; fold into system.
       out.push({ role: 'system', content: parts.map((p) => p.text).join('\n') });
     } else {
       out.push({ role: 'user', content: parts });
@@ -211,6 +243,16 @@ interface ResponseInit {
   status: 'in_progress' | 'completed' | 'failed' | 'incomplete';
   output?: Json[];
   error?: { code: string; message: string } | null;
+  incompleteDetails?: { reason: string } | null;
+}
+
+/**
+ * Terminal status from upstream evidence. A stream EOF without an explicit
+ * `done` event is NOT a successful completion — report incomplete instead of
+ * fabricating success.
+ */
+export function resolveTerminalStatus(sawDone: boolean, failed: boolean): 'completed' | 'incomplete' {
+  return sawDone && !failed ? 'completed' : 'incomplete';
 }
 
 function buildResponseObject(init: ResponseInit): Json {
@@ -223,7 +265,7 @@ function buildResponseObject(init: ResponseInit): Json {
     output: init.output ?? [],
     // Compatibility fields — declare the gateway's real (stateless) behavior.
     error: init.error ?? null,
-    incomplete_details: null,
+    incomplete_details: init.incompleteDetails ?? null,
     instructions: null,
     max_output_tokens: null,
     parallel_tool_calls: true,
@@ -367,6 +409,7 @@ async function collectResponse(res: Response, params: RunParams): Promise<void> 
   let fullText = '';
   const toolCalls: CollectedToolCall[] = [];
   let errorMsg = '';
+  let sawDone = false;
 
   for await (const evt of upstream) {
     if (evt.type === 'text_delta' && typeof evt.delta === 'string') {
@@ -378,6 +421,8 @@ async function collectResponse(res: Response, params: RunParams): Promise<void> 
     } else if (evt.type === 'error') {
       const err = (evt.error ?? {}) as Json;
       errorMsg = (err.errorMessage as string) || (evt.reason as string) || 'Upstream stream error';
+    } else if (evt.type === 'done') {
+      sawDone = true;
     }
   }
 
@@ -394,8 +439,16 @@ async function collectResponse(res: Response, params: RunParams): Promise<void> 
     output.push(functionCallOutputItem(`fc_${i}_${Date.now().toString(36)}`, tc));
   });
 
-  const response = buildResponseObject({ id: respId, createdAt, model, status: 'completed', output });
-  deps.logRequest({ event: 'res', id: respId, api: 'responses', ms: Date.now() - params.t0, tools: toolCalls.length });
+  // EOF without an explicit done event is an uncertain termination, not success.
+  const status = resolveTerminalStatus(sawDone, false);
+  if (status === 'incomplete') {
+    deps.logRequest({ event: 'upstream_eof_without_done', id: respId, api: 'responses' });
+  }
+  const response = buildResponseObject({
+    id: respId, createdAt, model, status, output,
+    incompleteDetails: status === 'incomplete' ? { reason: 'upstream_ended' } : null,
+  });
+  deps.logRequest({ event: 'res', id: respId, api: 'responses', ms: Date.now() - params.t0, tools: toolCalls.length, status });
   res.json(response);
 }
 
@@ -512,13 +565,18 @@ async function streamResponse(req: Request, res: Response, params: RunParams): P
 
     if (!failed) {
       closeTextItem();
-      if (!streamDone) {
-        // Upstream ended without a done event — finish gracefully.
-      }
-      const completed = buildResponseObject({
-        id: respId, createdAt, model, status: 'completed', output: finalizedOutput,
+      // EOF without an explicit done event is an uncertain termination.
+      const status = resolveTerminalStatus(streamDone, false);
+      const terminal = buildResponseObject({
+        id: respId, createdAt, model, status, output: finalizedOutput,
+        incompleteDetails: status === 'incomplete' ? { reason: 'upstream_ended' } : null,
       });
-      emit('response.completed', { response: completed });
+      if (status === 'incomplete') {
+        deps.logRequest({ event: 'upstream_eof_without_done', id: respId, api: 'responses' });
+        emit('response.incomplete', { response: terminal });
+      } else {
+        emit('response.completed', { response: terminal });
+      }
     }
   } finally {
     deps.logRequest({
