@@ -16,6 +16,136 @@ export interface GeminiWebClientOptions {
   headless?: boolean;
 }
 
+// In-browser scraper for the latest Gemini model response. String form keeps
+// tsx/esbuild from injecting its __name helper; keep regex backslashes doubled
+// (template literal unescapes them once before the browser sees the code).
+const SCRAPE_LATEST_RESPONSE = `(() => {
+        // 清理不可见 Unicode 字符
+        const clean = (t) => t.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+
+        // 使用 innerText（排除隐藏元素和 CSS 控制的不可见内容）而非 textContent
+        const getText = (el) => {
+          const raw = el.innerText ?? "";
+          return clean(raw);
+        };
+
+        // 排除区域检测
+        const sidebarRoot = document.querySelector('[aria-label*="对话"], [class*="sidebar"], nav');
+        const inputEl = document.querySelector(
+          '[contenteditable="true"], textarea, [placeholder*="Gemini"], [placeholder*="问问"]',
+        );
+        const inputRoot =
+          inputEl?.closest("form") ??
+          inputEl?.closest("[class*='input']") ??
+          inputEl?.parentElement?.parentElement;
+
+        const isExcluded = (el) => sidebarRoot?.contains(el) || inputRoot?.contains(el);
+
+        // 噪声文本过滤
+        const noisePatterns = [
+          "Ask Gemini",
+          "问问 Gemini",
+          "Enter a prompt",
+          "输入提示",
+          "需要我为你做些什么",
+          "发起新对话",
+          "我的内容",
+          "设置和帮助",
+          "制作图片",
+          "创作音乐",
+          "帮我学习",
+          "随便写点什么",
+          "给我的一天注入活力",
+          "升级到 Google AI Plus",
+          "正在加载",
+          "复制",
+          "分享",
+          "修改",
+          "朗读",
+        ];
+        const isNoise = (t) =>
+          t.length < 20 ||
+          noisePatterns.some((p) => t.includes(p)) ||
+          /^(你好|需要我|sage)/i.test(t);
+
+        // 去除回复中的 UI 按钮文字（如 "复制 分享 修改 朗读" 等尾部噪声）
+        const stripTrailingUI = (t) =>
+          t
+            .replace(
+              /\\n?\\s*(复制|分享|修改|朗读|Copy|Share|Edit|Read aloud|thumb_up|thumb_down|more_vert)[\\s\\n]*/gi,
+              "",
+            )
+            .replace(/\\s+$/, "");
+
+        const main =
+          document.querySelector("main") ??
+          document.querySelector('[role="main"]') ??
+          document.querySelector('[class*="chat"]') ??
+          document.body;
+        const scoped = main === document.body ? document : main;
+
+        let text = "";
+
+        // 策略 1：精确匹配 Gemini 模型回复容器（只取最后一条）
+        const modelSelectors = [
+          "model-response message-content", // Gemini 2025+ web component
+          '[data-message-author="model"] .message-content',
+          '[data-message-author="model"]',
+          '[data-sender="model"]',
+          '[class*="model-response"] [class*="markdown"]',
+          '[class*="model-response"]',
+          '[class*="response-content"] [class*="markdown"]',
+          '[class*="response-content"]',
+        ];
+
+        for (const sel of modelSelectors) {
+          const els = scoped.querySelectorAll(sel);
+          // 从最后一个元素开始（最新回复）
+          for (let i = els.length - 1; i >= 0; i--) {
+            const el = els[i];
+            if (isExcluded(el)) {
+              continue;
+            }
+            const t = getText(el);
+            if (t.length >= 30 && !isNoise(t)) {
+              text = stripTrailingUI(t);
+              break;
+            }
+          }
+          if (text) {
+            break;
+          }
+        }
+
+        // 策略 2（受限回退）：只在 main 区域内找 markdown 渲染块，不匹配泛化选择器
+        if (!text) {
+          const fallbackSelectors = ['[class*="markdown"]', "article"];
+          for (const sel of fallbackSelectors) {
+            const els = scoped.querySelectorAll(sel);
+            for (let i = els.length - 1; i >= 0; i--) {
+              const el = els[i];
+              if (isExcluded(el)) {
+                continue;
+              }
+              const t = getText(el);
+              if (t.length >= 30 && !isNoise(t)) {
+                text = stripTrailingUI(t);
+                break;
+              }
+            }
+            if (text) {
+              break;
+            }
+          }
+        }
+
+        const stopBtn = document.querySelector(
+          '[aria-label*="Stop"], [aria-label*="stop"], [aria-label*="停止"]',
+        );
+        const isStreaming = !!stopBtn;
+        return { text, isStreaming };
+      })()`;
+
 export class GeminiWebClientBrowser {
   private options: GeminiWebClientOptions;
   private browser: Browser | null = null;
@@ -153,6 +283,14 @@ export class GeminiWebClientBrowser {
     await page.waitForTimeout(300);
     await page.keyboard.type(params.message, { delay: 20 });
     await page.waitForTimeout(300);
+
+    // Snapshot the last response BEFORE submit so polling never settles for a
+    // pre-existing answer on the shared browser tab.
+    const baselineText = await page
+      .evaluate(SCRAPE_LATEST_RESPONSE)
+      .then((r) => r.text)
+      .catch(() => "");
+
     await page.keyboard.press("Enter");
     console.log("[Gemini Web Browser] DOM: typed message and pressed Enter");
 
@@ -171,132 +309,12 @@ export class GeminiWebClientBrowser {
 
       await new Promise((r) => setTimeout(r, pollIntervalMs));
 
-      const result = await this.page.evaluate(() => {
-        // 清理不可见 Unicode 字符
-        const clean = (t: string) => t.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
-
-        // 使用 innerText（排除隐藏元素和 CSS 控制的不可见内容）而非 textContent
-        const getText = (el: Element): string => {
-          const raw = (el as HTMLElement).innerText ?? "";
-          return clean(raw);
-        };
-
-        // 排除区域检测
-        const sidebarRoot = document.querySelector('[aria-label*="对话"], [class*="sidebar"], nav');
-        const inputEl = document.querySelector(
-          '[contenteditable="true"], textarea, [placeholder*="Gemini"], [placeholder*="问问"]',
-        );
-        const inputRoot =
-          inputEl?.closest("form") ??
-          inputEl?.closest("[class*='input']") ??
-          inputEl?.parentElement?.parentElement;
-
-        const isExcluded = (el: Element) => sidebarRoot?.contains(el) || inputRoot?.contains(el);
-
-        // 噪声文本过滤
-        const noisePatterns = [
-          "Ask Gemini",
-          "问问 Gemini",
-          "Enter a prompt",
-          "输入提示",
-          "需要我为你做些什么",
-          "发起新对话",
-          "我的内容",
-          "设置和帮助",
-          "制作图片",
-          "创作音乐",
-          "帮我学习",
-          "随便写点什么",
-          "给我的一天注入活力",
-          "升级到 Google AI Plus",
-          "正在加载",
-          "复制",
-          "分享",
-          "修改",
-          "朗读",
-        ];
-        const isNoise = (t: string) =>
-          t.length < 20 ||
-          noisePatterns.some((p) => t.includes(p)) ||
-          /^(你好|需要我|sage)/i.test(t);
-
-        // 去除回复中的 UI 按钮文字（如 "复制 分享 修改 朗读" 等尾部噪声）
-        const stripTrailingUI = (t: string) =>
-          t
-            .replace(
-              /\n?\s*(复制|分享|修改|朗读|Copy|Share|Edit|Read aloud|thumb_up|thumb_down|more_vert)[\s\n]*/gi,
-              "",
-            )
-            .replace(/\s+$/, "");
-
-        const main =
-          document.querySelector("main") ??
-          document.querySelector('[role="main"]') ??
-          document.querySelector('[class*="chat"]') ??
-          document.body;
-        const scoped = main === document.body ? document : main;
-
-        let text = "";
-
-        // 策略 1：精确匹配 Gemini 模型回复容器（只取最后一条）
-        const modelSelectors = [
-          "model-response message-content", // Gemini 2025+ web component
-          '[data-message-author="model"] .message-content',
-          '[data-message-author="model"]',
-          '[data-sender="model"]',
-          '[class*="model-response"] [class*="markdown"]',
-          '[class*="model-response"]',
-          '[class*="response-content"] [class*="markdown"]',
-          '[class*="response-content"]',
-        ];
-
-        for (const sel of modelSelectors) {
-          const els = scoped.querySelectorAll(sel);
-          // 从最后一个元素开始（最新回复）
-          for (let i = els.length - 1; i >= 0; i--) {
-            const el = els[i];
-            if (isExcluded(el)) {
-              continue;
-            }
-            const t = getText(el);
-            if (t.length >= 30 && !isNoise(t)) {
-              text = stripTrailingUI(t);
-              break;
-            }
-          }
-          if (text) {
-            break;
-          }
-        }
-
-        // 策略 2（受限回退）：只在 main 区域内找 markdown 渲染块，不匹配泛化选择器
-        if (!text) {
-          const fallbackSelectors = ['[class*="markdown"]', "article"];
-          for (const sel of fallbackSelectors) {
-            const els = scoped.querySelectorAll(sel);
-            for (let i = els.length - 1; i >= 0; i--) {
-              const el = els[i];
-              if (isExcluded(el)) {
-                continue;
-              }
-              const t = getText(el);
-              if (t.length >= 30 && !isNoise(t)) {
-                text = stripTrailingUI(t);
-                break;
-              }
-            }
-            if (text) {
-              break;
-            }
-          }
-        }
-
-        const stopBtn = document.querySelector(
-          '[aria-label*="Stop"], [aria-label*="stop"], [aria-label*="停止"]',
-        );
-        const isStreaming = !!stopBtn;
-        return { text, isStreaming };
-      });
+      // String-form evaluate: tsx/esbuild rewrites inner named arrows with a
+      // __name() helper that only exists in Node scope, causing ReferenceError.
+      const result = await this.page.evaluate(SCRAPE_LATEST_RESPONSE) as {
+        text: string;
+        isStreaming: boolean;
+      };
 
       // 忽略过短内容（<40 字多为问候/按钮；日志 38 字为误抓问候语）
       const minLen = 40;
@@ -305,7 +323,13 @@ export class GeminiWebClientBrowser {
           `[Gemini Web Browser] 忽略过短内容(${result.text.length}字): ${result.text.slice(0, 50)}...`,
         );
       }
-      if (result.text && result.text.length >= minLen) {
+      // Ignore the pre-submit baseline — otherwise a stale answer on the
+      // shared tab looks "stable" and gets returned before the new reply.
+      if (
+        result.text &&
+        result.text.length >= minLen &&
+        result.text !== baselineText
+      ) {
         if (result.text !== lastText) {
           lastText = result.text;
           stableCount = 0;

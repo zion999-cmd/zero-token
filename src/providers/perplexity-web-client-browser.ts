@@ -206,8 +206,10 @@ export class PerplexityWebClientBrowser {
     for (let elapsed = 0; elapsed < maxWaitMs; elapsed += pollInterval) {
       await page.waitForTimeout(pollInterval);
 
-      const text = await page.evaluate(() => {
-        const clean = (t: string) => t.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+      // String-form evaluate avoids the esbuild __name helper injection
+      // (ReferenceError in browser when callbacks contain named arrows).
+      const text = await page.evaluate(`(() => {
+        const clean = (t) => t.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
         // Perplexity answer selectors — prose class is the main answer container
         const selectors = [
           '[class*="prose"]',
@@ -215,17 +217,21 @@ export class PerplexityWebClientBrowser {
           '[class*="markdown"]',
           '[class*="threadConten"] [class*="gap-y-sm"]',
         ];
+        // The submitted question is rendered on the page too; the middleware
+        // wraps it with an [INSTRUCTION] suffix — skip those blocks.
+        const isQuestion = (t) =>
+          t.includes("You are the AI assistant") || t.startsWith("User:");
         for (const sel of selectors) {
           const els = document.querySelectorAll(sel);
           for (let i = els.length - 1; i >= 0; i--) {
-            const t = clean((els[i] as HTMLElement).innerText ?? "");
-            if (t.length >= 2) {
+            const t = clean(els[i].innerText ?? "");
+            if (t.length >= 2 && !isQuestion(t)) {
               return t;
             }
           }
         }
         return "";
-      });
+      })()`) as string;
 
       if (text && text.length >= 2) {
         if (text !== lastText) {
