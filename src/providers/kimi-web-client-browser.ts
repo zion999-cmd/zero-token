@@ -169,6 +169,93 @@ export class KimiWebClientBrowser {
     return { browser: this.browser, page: this.page };
   }
 
+  /** Decode a JWT's exp (unix seconds); 0 when the token is not a parseable JWT. */
+  private jwtExp(token: string): number {
+    try {
+      const payload = token.split(".")[1];
+      if (!payload) return 0;
+      const claims = JSON.parse(Buffer.from(payload, "base64url").toString()) as { exp?: unknown };
+      return typeof claims.exp === "number" ? claims.exp : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Resolve a usable access token at call time.
+   *
+   * kimi.com keeps a SHORT-LIVED (~15 min) access_token plus a long-lived
+   * refresh_token in localStorage; a token captured at onboard time expires
+   * within days and must not be preferred over the live browser session.
+   */
+  private async resolveAccessToken(): Promise<string> {
+    const { page, browser } = await this.ensureBrowser();
+    const skewMs = 60_000;
+    const isValid = (token: string): boolean => {
+      if (!token) return false;
+      const exp = this.jwtExp(token);
+      return exp === 0 || exp * 1000 > Date.now() + skewMs;
+    };
+
+    const stored = await page.evaluate(() => ({
+      access: localStorage.getItem("access_token") || "",
+      refresh: localStorage.getItem("refresh_token") || "",
+    }));
+
+    if (isValid(stored.access)) {
+      return stored.access;
+    }
+
+    if (stored.refresh) {
+      // The site rotates tokens via the auth.kimi.com Connect RPC gateway;
+      // call it from the page (CORS + site cookies apply automatically).
+      const fresh = await page.evaluate(
+        async (refreshToken: string) => {
+          try {
+            const r = await fetch(
+              "https://auth.kimi.com/api/account.gateway.v1.AuthService/RefreshToken",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ refresh_token: refreshToken }),
+              },
+            );
+            if (!r.ok) return "";
+            // Response is camelCase: { accessToken, refreshToken }
+            const d = (await r.json()) as {
+              accessToken?: string;
+              refreshToken?: string;
+            };
+            if (d.accessToken) localStorage.setItem("access_token", d.accessToken);
+            if (d.refreshToken) localStorage.setItem("refresh_token", d.refreshToken);
+            return d.accessToken || "";
+          } catch {
+            return "";
+          }
+        },
+        stored.refresh,
+      );
+      if (isValid(fresh)) {
+        console.log("[Kimi Web] access_token refreshed via refresh_token");
+        return fresh;
+      }
+    }
+
+    if (isValid(this.accessToken)) {
+      return this.accessToken;
+    }
+
+    const cookies = await browser.cookies([this.baseUrl]);
+    const cookieToken = cookies.find((c) => c.name === "kimi-auth")?.value || "";
+    if (isValid(cookieToken)) {
+      return cookieToken;
+    }
+
+    throw new Error(
+      "Kimi: 登录态已过期且无法自动刷新，请在浏览器中重新登录 kimi.com（或运行 ./onboard.sh）。",
+    );
+  }
+
   async init() {
     await this.ensureBrowser();
   }
@@ -185,8 +272,7 @@ export class KimiWebClientBrowser {
     const { browser } = await this.ensureBrowser();
 
     const cookies = await browser.cookies([this.baseUrl]);
-    const authToken = this.accessToken || cookies.find((c) => c.name === "kimi-auth")?.value;
-    if (!authToken) throw new Error("Kimi: no auth token for file upload");
+    const authToken = await this.resolveAccessToken();
 
     const cookieHeader = cookies
       .filter((c) => c.domain.includes("kimi.com") || c.domain.includes("moonshot.cn"))
@@ -259,14 +345,8 @@ export class KimiWebClientBrowser {
     const { browser } = await this.ensureBrowser();
 
     const cookies = await browser.cookies([this.baseUrl]);
-    const kimiAuthCookie = cookies.find((c) => c.name === "kimi-auth")?.value;
-    // Prefer accessToken (from localStorage) over kimi-auth cookie
-    const authToken = this.accessToken || kimiAuthCookie;
-    if (!authToken) {
-      throw new Error(
-        "Kimi: 未找到认证凭证（accessToken 或 kimi-auth Cookie）。请重新运行 ./onboard.sh 刷新登录状态。",
-      );
-    }
+    // Live token from page localStorage (auto-refreshed) — see resolveAccessToken.
+    const authToken = await this.resolveAccessToken();
 
     // Build full cookie string from browser context to pass in Node.js fetch
     const cookieHeader = cookies
