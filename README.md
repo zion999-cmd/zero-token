@@ -1,6 +1,6 @@
 # My Zero Token
 
-免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI / Anthropic 兼容的 API**。
+免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI Chat Completions / OpenAI Responses / Anthropic Messages 三种兼容 API**。
 
 > **状态：** 7 个供应商实测可用（2026-09-15）。OpenAI API 稳定。Anthropic API（`/v1/messages`）**已稳定支持 Claude Code**——工具调用、思考块、多轮对话、多步文件写入均可正常工作。DeepSeek 作为后端经过大量测试，是目前最推荐的 Claude Code 后端。
 > 
@@ -114,7 +114,7 @@ MAX_QUEUE_DEPTH=10       # 排队超过此数即丢弃，默认 10
 
 ## API
 
-同时支持 **OpenAI** 和 **Anthropic** 两种 API 范式。
+同时支持 **OpenAI Chat Completions**、**OpenAI Responses** 与 **Anthropic Messages** 三种 API 范式（建议纯聊天走 chat completions，工具/Agent 工作流走 responses）。
 
 ### 快速连接
 
@@ -353,6 +353,60 @@ curl -X POST http://127.0.0.1:3001/v1/messages \
   "usage": {"input_tokens": 0, "output_tokens": 0}
 }
 ```
+
+### `POST /v1/responses` (OpenAI Responses API)
+
+新版 OpenAI SDK / Codex / Agents SDK 默认使用的 Responses 协议。建议分工：**纯聊天走 `/v1/chat/completions`，工具/Agent 工作流走 `/v1/responses`**。
+
+请求体：
+
+- `model` / `input`（字符串，或 Responses item 数组）/ `stream` / `instructions` / `tools`
+- 支持的 input item：`message`（含 `input_text` / `output_text` / `input_image`）、`function_call`、`function_call_output`、`reasoning`（丢弃）
+- 也兼容 chat 形态的 `role:"tool"` 与 assistant `tool_calls`
+- 输出 item：`message`（`output_text`）与 `function_call`
+- **完整工具循环**：`function_call`（其 `call_id`）→ 客户端执行 → `function_call_output`（同 `call_id`）→ 最终回答
+- SSE 事件带单调递增的 `sequence_number`：`response.created` → `response.in_progress` → `response.output_item.added` → `response.output_text.delta` / `response.function_call_arguments.delta` → … → `response.completed`（或流中的 `response.failed`）
+
+边界（无状态网关）：
+
+- 恒为 `store:false`；不支持 `previous_response_id` 续写、无 `GET /v1/responses/:id`（上下文由调用方在 `input` 中带回）
+- 仅透传 **function** 工具；`web_search` / `file_search` / `computer_use_preview` 等托管工具静默剥离
+- 不输出思考链（reasoning item）；`temperature` / `max_output_tokens` / `parallel_tool_calls` 等参数 accepted but not enforced，响应不 echo
+- `usage` 未知时为 `null`，不伪造 0
+- 视觉为 best-effort：现有管线只透传**最新一轮** user 消息中的图片（`input_image`，支持 data URI 与 URL）
+- 建立连接前失败返回 HTTP 错误信封；SSE 开始后失败才发 `response.failed` 事件
+- 畸形 `arguments` 不污染函数参数，降级到保留键 `__responses_raw_arguments`
+
+```bash
+# 非流式：工具调用，输出 function_call item
+curl -X POST http://127.0.0.1:3001/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-web/deepseek-chat",
+    "input": "北京今天天气怎么样？请调用 get_weather。",
+    "tools": [{
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get weather for a city",
+      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+    }]
+  }'
+# → output: [{"type":"function_call","id":"fc_…","call_id":"call_…","name":"get_weather","arguments":"{\"city\":\"北京\"}","status":"completed"}]
+
+# 把工具结果带回（call_id 与上一步一致）
+curl -X POST http://127.0.0.1:3001/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-web/deepseek-chat",
+    "input": [
+      {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "北京天气怎样？"}]},
+      {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"北京\"}"},
+      {"type": "function_call_output", "call_id": "call_1", "output": "{\"temp_c\":-3,\"condition\":\"晴\"}"}
+    ]
+  }'
+```
+
+合规测试：`./test-responses-api.sh [base_url] [api_key]`
 
 ### `GET /health`
 
