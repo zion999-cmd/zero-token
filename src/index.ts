@@ -7,43 +7,12 @@ import { getWebStreamFactory, listWebStreamApiIds } from './streams/web-stream-f
 import { setDebugEnabled, debugLog } from './debug-log.js';
 import { runWithLimit, ShedLoad } from './concurrency-limiter.js';
 import { createRateLimiter } from './rate-limiter.js';
+import { getCookieForProvider, loadAuthProfiles } from './auth-profiles.js';
+import { logRequest } from './request-log.js';
+import { getConversationKey } from './conversation-key.js';
+import { createResponsesHandler } from './responses-api.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// ── Request logging ────────────────────────────────────
-
-const LOG_DIR = path.join(__dirname, '..', '.myzt-state');
-const REQ_LOG = path.join(LOG_DIR, 'requests.log');
-
-function logRequest(entry: Record<string, unknown>) {
-  try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
-    fs.appendFileSync(REQ_LOG, line, 'utf-8');
-  } catch { /* best-effort */ }
-}
-
-// ── Auth profile loading ──────────────────────────────
-
-const AUTH_FILE = path.join(__dirname, '..', '.myzt-state', 'auth-profiles.json');
-
-function loadAuthProfiles(): Record<string, { type: string; provider: string; token: string }> {
-  try {
-    return JSON.parse(fs.readFileSync(AUTH_FILE, 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-
-function getCookieForProvider(apiId: string): string {
-  const profiles = loadAuthProfiles();
-  const profileId = `${apiId}:default`;
-  const entry = profiles[profileId];
-  if (!entry) return '';
-  // Return the full credentials JSON (cookie + bearer + sessionKey etc.)
-  // The stream factory will parse it into the proper client options.
-  return entry.token || '';
-}
 
 // ── Config ────────────────────────────────────────────
 
@@ -129,41 +98,6 @@ if (API_KEY) {
     next();
   });
   console.log('API key auth enabled');
-}
-
-// Simple but collision-resistant hash for session key generation.
-// Using djb2-style hash on the full string avoids the truncation collision
-// that occurs when two different long messages share the same first N characters.
-function hashStr(s: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = (h * 0x01000193) >>> 0;
-  }
-  return h.toString(16).padStart(8, '0');
-}
-
-// Derive a stable session key that identifies a logical conversation.
-// Key: hash(firstUserMessage) + msgCount bucket
-// - firstUserMessage stays constant across all turns of the same conversation
-// - sysHash intentionally omitted: Claude Code's system prompt contains dynamic
-//   fields (cch, session tokens) that change every turn, breaking cross-turn lookup
-// - msgCount bucket separates suggestion/title requests from main conversation turns
-function getConversationKey(messages: Array<{ role: string; content: unknown }>, _systemPrompt?: string): string {
-  const firstUser = messages.find(m => m.role === 'user');
-  let userText = '';
-  if (firstUser) {
-    if (typeof firstUser.content === 'string') userText = firstUser.content;
-    else if (Array.isArray(firstUser.content)) {
-      userText = (firstUser.content as Array<Record<string, unknown>>)
-        .filter(p => p.type === 'text').map(p => (p.text as string) || '').join('');
-    }
-  }
-  const userHash = hashStr(userText);
-  // Bucket by number of messages to separate initial turn from continuation turns.
-  // Turn 1 (msgs≤2), Turn 2+ (msgs 3-6), longer conversations (msgs 7+)
-  const msgBucket = messages.length <= 2 ? 'a' : messages.length <= 6 ? 'b' : 'c';
-  return `${userHash}_${msgBucket}`;
 }
 
 app.get('/', (_req: Request, res: Response) => {
@@ -434,6 +368,10 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
     });
   }
 });
+
+// ── OpenAI Responses API (/v1/responses) ──────────────
+
+app.post('/v1/responses', createResponsesHandler({ getCookieForProvider, logRequest }));
 
 // ── Anthropic Messages API (/v1/messages) ─────────────
 
