@@ -211,44 +211,17 @@ export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
           emitDelta("text", text);
         };
 
-        const pushDelta = (delta: string, forceType?: "text" | "thinking") => {
+        const pushDelta = (delta: string) => {
           if (!delta) {
             return;
           }
 
-          // Always accumulate into tagBuffer first so checkTags() can detect boundaries.
+          // Buffer first, then let checkTags() strip tag markup BEFORE anything
+          // is emitted per mode. Emitting raw deltas up-front leaked the split
+          // tool-call tags ('">', </tool_call>) into the JSON arguments.
           tagBuffer += delta;
 
-          // thinking content is emitted immediately — but we still need checkTags()
-          // to run so the closing </think> tag is detected and we switch back to text.
-          if (forceType === "thinking" || currentMode === "thinking") {
-            flushTextBuffer();
-            emitDelta("thinking", delta);
-            if (forceType === "thinking") {
-              tagBuffer = ""; // consumed the whole delta
-              return;
-            }
-            // fall through to checkTags() to detect </think>
-          }
-
-          // tool_call args are emitted immediately — checkTags() still runs for 」
-          if (currentMode === "tool_call") {
-            flushTextBuffer();
-            emitDelta("toolcall", delta);
-          } else {
-            // text mode: accumulate, flush at threshold
-            textBuffer += delta;
-            if (textBuffer.length >= textFlushThreshold) {
-              flushTextBuffer();
-            }
-          }
-
-          // Always parse tag boundaries from the full accumulated tagBuffer,
-          // regardless of how much text has been buffered or flushed.
-          // prevTagLen = where delta starts in tagBuffer; used in the else branch to
-          // avoid double-emitting text that was already flushed before this delta.
-          let prevTagLen = tagBuffer.length - delta.length;
-          const checkTags = () => {
+          const checkTags = (): void => {
             const thinkStart = tagBuffer.match(/<think\b[^<>]*>/i);
             const thinkEnd = tagBuffer.match(/<\/think\b[^<>]*>/i);
             const toolCallStart = tagBuffer.match(
@@ -283,16 +256,17 @@ export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
               const first = indices[0];
               const before = tagBuffer.slice(0, first.idx);
               if (before) {
-                // Flush pending text (which includes the "before" content).
-                // Then emit "before" as thinking/toolcall if needed.
+                // Flush content buffered in earlier scans, then emit the part of
+                // tagBuffer before the tag per current mode. Nothing in tagBuffer
+                // has ever entered textBuffer, so emitting directly cannot double.
                 flushTextBuffer();
                 if (currentMode === "thinking") {
                   emitDelta("thinking", before);
                 } else if (currentMode === "tool_call") {
                   emitDelta("toolcall", before);
+                } else {
+                  emitDelta("text", before);
                 }
-                // If text mode: textBuffer (which included "before") was already
-                // emitted by flushTextBuffer(); do NOT emit again (would double).
               }
 
               if (first.type === "think_start") {
@@ -343,23 +317,39 @@ export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
               }
               tagBuffer = tagBuffer.slice(first.idx + first.len);
               // Recurse: everything remaining in tagBuffer is new unprocessed content.
-              prevTagLen = 0;
               checkTags();
             } else {
-              // No tags found — check for partial tag at the end of buffer.
-              // prevTagLen (from pushDelta closure) tells us where new delta starts so
-              // we only emit characters not already accounted for by a previous flush.
+              // No complete tag found. Hold back only a tail that can still
+              // grow into one ('<', '</', '<tool_call name="x"', …) so markup
+              // is never emitted as content; the rest is safe to emit now.
               const lastAngle = tagBuffer.lastIndexOf("<");
-              if (lastAngle === -1) {
-                // No partial tag; new characters from this delta are safe text
-                textBuffer += tagBuffer.slice(prevTagLen);
-                tagBuffer = "";
-              } else if (lastAngle > 0) {
-                const safe = tagBuffer.slice(0, lastAngle);
-                textBuffer += safe;
-                tagBuffer = tagBuffer.slice(lastAngle);
+              let holdLen = 0;
+              if (lastAngle !== -1) {
+                const tail = tagBuffer.slice(lastAngle);
+                const looksLikePartialTag =
+                  !tail.includes(">") &&
+                  /^<\/?[a-zA-Z_][\w-]*(?:\s[^<>]*)?$/.test(tail);
+                if (looksLikePartialTag) {
+                  holdLen = tail.length;
+                }
               }
-              // else: lastAngle === 0 → starts with '<', all in tagBuffer, nothing to flush
+              const safe = tagBuffer.slice(0, tagBuffer.length - holdLen);
+
+              if (safe) {
+                if (currentMode === "tool_call") {
+                  flushTextBuffer();
+                  emitDelta("toolcall", safe);
+                } else if (currentMode === "thinking") {
+                  flushTextBuffer();
+                  emitDelta("thinking", safe);
+                } else {
+                  textBuffer += safe;
+                  if (textBuffer.length >= textFlushThreshold) {
+                    flushTextBuffer();
+                  }
+                }
+              }
+              tagBuffer = holdLen > 0 ? tagBuffer.slice(tagBuffer.length - holdLen) : "";
             }
           };
           checkTags();
@@ -469,8 +459,10 @@ export function createDoubaoWebStreamFn(cookieOrJson: string): StreamFn {
           }
         }
 
-        // Flush any remaining text buffer and tag buffer at end of stream
-        if (tagBuffer) {
+        // Flush any remaining text buffer and tag buffer at end of stream.
+        // A held partial tag ('<', '</tool_c…' without closing '>') is markup
+        // that never completed — drop it rather than corrupt tool arguments.
+        if (tagBuffer && !/^<\/?[a-zA-Z_][\w-]*(\s[^<>]*)?$/.test(tagBuffer)) {
           const mode =
             (currentMode as string) === "thinking"
               ? "thinking"
