@@ -50,11 +50,29 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
 
-    const run = async () => {
+    const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
+
+    /**
+     * Drop the cached upstream conversation for this key.
+     *
+     * A conversation that produced nothing (or errored mid-turn) stays broken
+     * server-side, and without eviction every later request with the same key
+     * would keep returning empty results forever. Reuse is only an
+     * optimization here — the middleware inlines the full history into the
+     * prompt — so a fresh conversation is always a safe fallback.
+     */
+    const evictSession = (reason: string) => {
+      sessionMap.delete(sessionKey);
+      parentMessageMap.delete(sessionKey);
+      console.warn(
+        `[DeepseekWebStream] ${reason} — evicted upstream session for ${sessionKey}; next run starts fresh`,
+      );
+    };
+
+    const run = async (attempt = 0): Promise<void> => {
       try {
         await client.init();
 
-        const sessionKey = (context as unknown as { sessionId?: string }).sessionId || "default";
         let dsSessionId = sessionMap.get(sessionKey);
         let parentId = parentMessageMap.get(sessionKey);
 
@@ -1066,6 +1084,17 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
         (assistantMessage as unknown as { thinking_enabled: boolean }).thinking_enabled =
           !!accumulatedReasoning;
 
+        // Nothing produced at all: the cached upstream conversation is unusable.
+        // No events have been emitted yet (the first push happens only once
+        // content arrives), so retrying once on a fresh session is invisible to
+        // the client rather than surfacing an empty reply.
+        if (finalContent.length === 0) {
+          evictSession("Empty result");
+          if (attempt === 0) {
+            return run(1);
+          }
+        }
+
         stream.push({
           type: "done",
           reason: assistantMessage.stopReason as "stop" | "length" | "toolUse",
@@ -1074,7 +1103,7 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
         // Log summary at stream end so we can diagnose DS decisions without joining
         // hundreds of delta records. thinkingTail lets us see why DS chose silence/text.
         debugLog('upstream', {
-          layer: 'upstream', id: messageId,
+          layer: 'upstream', id: sessionKey,
           evtType: 'done',
           stopReason: assistantMessage.stopReason,
           textLen: accumulatedContent.length,
@@ -1084,6 +1113,9 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
         });
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
+        // A failed turn can leave the upstream conversation broken; drop it so
+        // the next request does not inherit the failure.
+        evictSession(`Run failed (${errorMessage.slice(0, 60)})`);
         stream.push({
           type: "error",
           reason: "error",
