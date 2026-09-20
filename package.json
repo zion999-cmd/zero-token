@@ -1,17 +1,17 @@
 {
-  "name": "my-zero-token",
+  "name": "zero-token",
   "version": "1.0.0",
   "description": "Free LLM access via browser login - extract from OpenClaw Zero Token",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "my-zero-token": "./dist/index.js"
+    "zero-token": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "vitest run"
   },
   "keywords": [
     "llm",
@@ -37,6 +37,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^5.0.1"
   }
 }

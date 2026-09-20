@@ -1,0 +1,11 @@
+node_modules/
+.gateway.pid
+.gateway.log
+.myzt-state/
+dist/
+*.log
+.DS_Store
+extensions-linked
+config/config.json
+!index.html
+!config/config.json.example
