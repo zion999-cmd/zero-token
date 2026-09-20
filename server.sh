@@ -12,10 +12,28 @@ HOST="${MYZT_HOST:-127.0.0.1}"
 
 is_running() { [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; }
 
+# Reads the gateway access key from config/config.json (empty when unset).
+read_api_key() {
+  python3 -c "import json; d=json.load(open('$SCRIPT_DIR/config/config.json')); print(d.get('api_key',''))" 2>/dev/null || echo ""
+}
+
+# Prints the client-facing connection info. The key goes to stdout only —
+# never to .gateway.log — so it stays out of the persisted log file.
+print_access_info() {
+  echo "  http://$HOST:$PORT"
+  local api_key
+  api_key=$(read_api_key)
+  if [ -n "$api_key" ]; then
+    echo "  API Key: $api_key"
+  else
+    echo "  API Key: (未设置 — 网关不校验鉴权)"
+  fi
+}
+
 cmd_start() {
   if is_running; then
     echo "✓ Gateway 已在运行 (PID $(cat "$PID_FILE"), port $PORT)"
-    echo "  http://$HOST:$PORT"
+    print_access_info
     return 0
   fi
 
@@ -41,7 +59,7 @@ cmd_start() {
     sleep 0.5
     if curl -sf "http://$HOST:$PORT/health" &>/dev/null; then
       echo "✓ Gateway 已启动 (PID $(cat "$PID_FILE"), port $PORT)"
-      echo "  http://$HOST:$PORT"
+      print_access_info
       return 0
     fi
   done
@@ -79,6 +97,9 @@ cmd_status() {
   if is_running; then
     echo "✓ Gateway 运行中 (PID $(cat "$PID_FILE"), port $PORT)"
     echo "  地址: http://$HOST:$PORT"
+    local api_key
+    api_key=$(read_api_key)
+    [ -n "$api_key" ] && echo "  API Key: $api_key"
   else
     echo "✗ Gateway 未运行"
     [ -f "$LOG_FILE" ] && echo "" && echo "最近日志:" && tail -5 "$LOG_FILE" | sed 's/^/  /'
@@ -102,7 +123,7 @@ cmd_status() {
   if is_running; then
     echo ""
     echo "可用模型:"
-    API_KEY_VAL=$(python3 -c "import json; d=json.load(open('$SCRIPT_DIR/config/config.json')); print(d.get('api_key',''))" 2>/dev/null || echo "")
+    API_KEY_VAL=$(read_api_key)
     curl -sf "http://$HOST:$PORT/v1/models" \
       ${API_KEY_VAL:+-H "Authorization: Bearer $API_KEY_VAL"} 2>/dev/null \
       | python3 -c "
