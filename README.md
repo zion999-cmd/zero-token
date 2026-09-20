@@ -6,6 +6,30 @@
 > 
 > `express.json({limit:'50mb'})` 是必须的——Claude Code 的请求体可达 160KB+。
 
+## 设计边界与无状态原则
+
+三层结构，职责不可混淆：
+
+```
+WebChat provider（上游网页版）
+        ↑
+my-zero-token Gateway          ← 产品核心；契约 = /v1/* 端点
+        ↑
+:3001 测试应用（index.html）    ← 消费者，不是 Gateway
+```
+
+> **English:** `my-zero-token` is stateless by design at the API semantic layer. Standard API requests must carry the context required to reproduce their behavior independently of upstream WebChat session lifetime. Upstream WebChat sessions are implementation resources, not authoritative conversation memory.
+
+> **中文:** `my-zero-token` 在 API 语义层无状态。标准 API 请求必须自行携带完成当前调用所需的上下文，其正确性不得依赖上游 WebChat session 的生命周期。上游 WebChat session 仅是实现资源，不是权威会话记忆。
+
+**核心判据：** 删掉整个 :3001 测试应用，Gateway 的 WebChat→API 核心功能必须仍然完整。（已实测：移除 `index.html` 后 `/health`、`/v1/models`、`/v1/chat/completions`、`/v1/responses` 全部正常。）
+
+`mode` 字段（`"chat"` / `"chatroom"` / `"tool"`）**不属于 API 契约**，是 :3001 测试应用使用的内部 hint；省略它即走标准无状态路径。
+
+> The `mode:"chat"` hint is an intentional stateful test mode that exposes native WebChat session continuity and does not share the recoverability guarantees of the standard API modes.
+
+各 mode 的语义（是否自带上下文、是否依赖上游会话、能否用新会话重试、是否支持 tools）集中定义在 [`src/mode-semantics.ts`](src/mode-semantics.ts)，重试/驱逐/tools 行为均从该表派生。
+
 ## 支持的供应商
 
 | 供应商 | 聊天 | 工具调用 | 图片识别 | 方式 |
@@ -411,7 +435,8 @@ curl -X POST http://127.0.0.1:3001/v1/responses \
 - 支持 `developer` 角色（归入 system/instructions 层级，不降级为 user）
 - 上游流未正常结束（EOF 无 done）时状态为 `incomplete`（`incomplete_details.reason:"upstream_ended"`），不伪装 completed
 - 合规测试：`./test-responses-api.sh [base_url] [api_key]`
-- 单元测试（vitest）：`npm test` —— 覆盖 Responses 归一化（input_image 字符串形态、developer 角色、tool output、终态判定）与各流工厂/豆包标签解析
+- 单元测试（vitest）：`npm test` —— 覆盖 Responses 归一化（input_image 字符串形态、developer 角色、tool output、终态判定）、mode 语义表与重试策略，以及各流工厂/豆包标签解析
+- 状态语义合规测试（打真实上游）：`./test-state-semantics.sh [base_url] [api_key]` —— 标准路径不依赖上游会话、chat 模式依赖且失败不重启会话、chat+tools 显式拒绝、chatroom 自带房间历史
 
 ### `GET /health`
 

@@ -10,6 +10,7 @@ import { createRateLimiter } from './rate-limiter.js';
 import { getCookieForProvider, loadAuthProfiles } from './auth-profiles.js';
 import { logRequest } from './request-log.js';
 import { getConversationKey } from './conversation-key.js';
+import { getModeSemantics, resolveMode } from './mode-semantics.js';
 import { createResponsesHandler } from './responses-api.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -182,6 +183,20 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
   if (!cookie) {
     return res.status(400).json({
       error: { message: 'Authentication required. Run ./onboard.sh to authorize.', type: 'authentication_error', param: null },
+    });
+  }
+
+  // Tools are only transmitted upstream in modes whose semantics allow it.
+  // Reject explicitly rather than letting the middleware silently drop them.
+  const modeSemantics = getModeSemantics(mode);
+  if (!modeSemantics.supportsTools && Array.isArray(tools) && tools.length > 0) {
+    return res.status(400).json({
+      error: {
+        message: `tools are not available in mode="${resolveMode(mode)}" (${modeSemantics.description}). Omit "mode" to use the standard API path, which supports tool calling and carries its own context.`,
+        type: 'invalid_request_error',
+        param: 'tools',
+        code: 'tools_unsupported_in_mode',
+      },
     });
   }
 

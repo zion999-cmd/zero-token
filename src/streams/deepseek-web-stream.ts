@@ -14,6 +14,7 @@ import {
   type DeepSeekWebClientOptions,
 } from "../providers/deepseek-web-client.js";
 import { LruMap } from "../utils/lru-map.js";
+import { canRetryWithFreshUpstreamSession, resolveMode } from "../mode-semantics.js";
 
 // Helper to strip messages for web providers
 function stripForWebProvider(prompt: string): string {
@@ -67,6 +68,39 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
       console.warn(
         `[DeepseekWebStream] ${reason} — evicted upstream session for ${sessionKey}; next run starts fresh`,
       );
+    };
+
+    // Whether a broken upstream session may be replaced by a fresh one. Only
+    // modes whose request carries its own context qualify — see
+    // mode-semantics.ts. In stateful modes (mode:"chat") the upstream session
+    // IS the conversation memory, so restarting it would silently answer
+    // without the conversation.
+    const mode = (context as unknown as { mode?: string }).mode;
+    const canRecoverWithFreshSession = canRetryWithFreshUpstreamSession(mode);
+
+    const pushError = (errorMessage: string) => {
+      stream.push({
+        type: "error",
+        reason: "error",
+        error: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage,
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          timestamp: Date.now(),
+        },
+      } as AssistantMessageEvent);
     };
 
     const run = async (attempt = 0): Promise<void> => {
@@ -1084,14 +1118,31 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
         (assistantMessage as unknown as { thinking_enabled: boolean }).thinking_enabled =
           !!accumulatedReasoning;
 
-        // Nothing produced at all: the cached upstream conversation is unusable.
-        // No events have been emitted yet (the first push happens only once
-        // content arrives), so retrying once on a fresh session is invisible to
-        // the client rather than surfacing an empty reply.
+        // Nothing produced at all: the cached upstream conversation looks
+        // unusable. No events have been emitted yet (the first push happens
+        // only once content arrives), so in a context-carrying mode we can
+        // replay the request on a fresh session invisibly.
         if (finalContent.length === 0) {
+          if (!canRecoverWithFreshSession) {
+            // Stateful mode: replacing the session would drop the conversation
+            // and answer from the latest message alone. Fail loudly instead of
+            // returning a confident, context-free answer.
+            console.error(
+              `[DeepseekWebStream] Empty result in mode="${resolveMode(mode)}" (upstream session is the conversation memory) — reporting failure without restarting the session`,
+            );
+            pushError(
+              `Upstream returned an empty response for mode="${resolveMode(mode)}", which relies on upstream session history that cannot be safely restarted. Retry, or use the standard API path (omit "mode") where the request carries its own context.`,
+            );
+            return;
+          }
           evictSession("Empty result");
           if (attempt === 0) {
-            return run(1);
+            // `await` (not `return run(1)`): returning a promise from inside
+            // try/finally runs the finally block as soon as the call is
+            // evaluated — which would end the stream before the retry emits
+            // anything, silently discarding the whole retry.
+            await run(1);
+            return;
           }
         }
 
@@ -1113,33 +1164,19 @@ export function createDeepseekWebStreamFn(cookieOrJson: string): StreamFn {
         });
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        // A failed turn can leave the upstream conversation broken; drop it so
-        // the next request does not inherit the failure.
-        evictSession(`Run failed (${errorMessage.slice(0, 60)})`);
-        stream.push({
-          type: "error",
-          reason: "error",
-          error: {
-            role: "assistant",
-            content: [],
-            stopReason: "error",
-            errorMessage,
-            api: model.api,
-            provider: model.provider,
-            model: model.id,
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              totalTokens: 0,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-            },
-            timestamp: Date.now(),
-          },
-        } as AssistantMessageEvent);
+        // A transient failure is not proof that the session is invalid. Only
+        // context-carrying modes may discard it; stateful modes keep the
+        // conversation and report the failure as-is.
+        if (canRecoverWithFreshSession) {
+          evictSession(`Run failed (${errorMessage.slice(0, 60)})`);
+        }
+        pushError(errorMessage);
       } finally {
-        stream.end();
+        // Only the outermost attempt closes the stream; a retry runs inside it
+        // and must not end the stream the caller is still reading from.
+        if (attempt === 0) {
+          stream.end();
+        }
       }
     };
 

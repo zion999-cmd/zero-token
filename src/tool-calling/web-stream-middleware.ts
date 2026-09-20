@@ -104,7 +104,11 @@ export function wrapWithToolCalling(streamFn: StreamFn, api: string): StreamFn {
     // --- Input rewriting ---
     const messages = context.messages || [];
 
-    // Stateless mode (tool / chatroom) — skip history building
+    // Mode semantics are defined centrally in src/mode-semantics.ts — the
+    // history/retry/tools rules below derive from that table, so do not
+    // re-derive them here. Note: `tools` is cleared in every non-default mode;
+    // the /v1/chat/completions route already rejects that combination with an
+    // explicit 400 instead of letting it be dropped silently.
     const ctxMode = (context as any).mode;
     // Chat mode — only send the last user message, let upstream web manage its own history
     if (ctxMode === 'chat') {
