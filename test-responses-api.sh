@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenAI Responses API Compliance Test — My Zero Token
+# OpenAI Responses API Compliance Test — Zero Token
 # Usage: ./test-responses-api.sh [base_url] [api_key]
 # Default: http://127.0.0.1:3001, no auth
 

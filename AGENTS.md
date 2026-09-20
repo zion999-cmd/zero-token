@@ -1,4 +1,4 @@
-# My Zero Token — Agent Instructions
+# Zero Token — Agent Instructions
 
 免 API Key 的多 LLM 网关，将 Web 聊天平台封装为 OpenAI / Anthropic 兼容 API。
 

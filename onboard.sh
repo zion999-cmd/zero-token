@@ -1,5 +1,5 @@
 #!/bin/bash
-# My Zero Token 授权向导
+# Zero Token 授权向导
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 source "$SCRIPT_DIR/lib/chrome.sh"
@@ -17,6 +17,6 @@ if ! is_cdp_ready; then
   exit 1
 fi
 
-echo "My Zero Token — 启动 Web 模型授权向导..."
+echo "Zero Token — 启动 Web 模型授权向导..."
 echo ""
 exec node --import tsx src/onboard-webauth.ts

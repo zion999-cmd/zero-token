@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>My Zero Token</title>
+<title>Zero Token</title>
 <style>
   :root {
     --bg: #0f0f0f;
@@ -390,7 +390,7 @@
 <!-- Sidebar -->
 <aside class="sidebar">
   <div class="sidebar-header">
-    <h1>My Zero Token</h1>
+    <h1>Zero Token</h1>
     <p>Zero-cost LLM gateway</p>
   </div>
   <div class="sidebar-models" id="sidebar-models">
@@ -636,14 +636,14 @@ function addToolMessage(toolCalls, results) {
 async function sendWithTools() { /* placeholder, real logic in sendMessage */ }
 
 // ── API Key ────────────────────────────────
-const API_KEY = window.MYZT_API_KEY || '';
+const API_KEY = window.ZERO_TOKEN_API_KEY || '';
 function authHeaders(h = {}) {
   if (API_KEY) h['Authorization'] = 'Bearer ' + API_KEY;
   return h;
 }
 
 // ── Cookie ─────────────────────────────────
-const savedCookie = localStorage.getItem('myzt_cookie');
+const savedCookie = localStorage.getItem('zt_cookie');
 if (savedCookie && typeof $cookieRow !== 'undefined' && $cookieRow) {
   $cookieRow.querySelector('input').value = savedCookie;
 }
@@ -1034,14 +1034,14 @@ function editParticipant(idx) {
 
 // ── Persistence ─────────────────────────────
 function saveCroomConfig() {
-  localStorage.setItem('myzt_croom_participants', JSON.stringify(chatRoomParticipants));
-  localStorage.setItem('myzt_croom_history', JSON.stringify(chatRoomHistory));
+  localStorage.setItem('zt_croom_participants', JSON.stringify(chatRoomParticipants));
+  localStorage.setItem('zt_croom_history', JSON.stringify(chatRoomHistory));
 }
 function loadCroomConfig() {
   try {
-    const p = localStorage.getItem('myzt_croom_participants');
+    const p = localStorage.getItem('zt_croom_participants');
     if (p) chatRoomParticipants = JSON.parse(p);
-    const h = localStorage.getItem('myzt_croom_history');
+    const h = localStorage.getItem('zt_croom_history');
     if (h) chatRoomHistory = JSON.parse(h);
   } catch {}
 }
@@ -1354,7 +1354,7 @@ function importCroomSession() {
 }
 
 function getStoredCroomSessions() {
-  try { return JSON.parse(localStorage.getItem('myzt_croom_sessions') || '[]'); } catch { return []; }
+  try { return JSON.parse(localStorage.getItem('zt_croom_sessions') || '[]'); } catch { return []; }
 }
 
 function loadCroomSession(idx) {
@@ -1376,7 +1376,7 @@ function loadCroomSession(idx) {
 function deleteCroomSession(idx) {
   const sessions = getStoredCroomSessions();
   sessions.splice(idx, 1);
-  localStorage.setItem('myzt_croom_sessions', JSON.stringify(sessions));
+  localStorage.setItem('zt_croom_sessions', JSON.stringify(sessions));
   // Refresh the modal
   document.querySelector('[style*=\"position:fixed\"]')?.remove();
   showManageCroomSessions();

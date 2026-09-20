@@ -102,7 +102,7 @@ if (API_KEY) {
 
 app.get('/', (_req: Request, res: Response) => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf-8');
-  res.send(html.replace('</head>', `<script>window.MYZT_API_KEY=${JSON.stringify(API_KEY)}</script></head>`));
+  res.send(html.replace('</head>', `<script>window.ZERO_TOKEN_API_KEY=${JSON.stringify(API_KEY)}</script></head>`));
 });
 
 app.get('/health', (_req: Request, res: Response) => {
@@ -221,7 +221,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: evt.delta }, finish_reason: null }],
-            system_fingerprint: 'fp_myzt_001',
+            system_fingerprint: 'fp_zt_001',
           })}\n\n`);
         } else if (evt.type === 'text_delta') {
           streamContent += evt.delta || '';
@@ -258,7 +258,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
           const finishReason = stopReason === 'toolUse' ? 'tool_calls' : stopReason;
           res.write(`data: ${JSON.stringify({
             id: chatId, object: 'chat.completion.chunk', created, model,
-            system_fingerprint: 'fp_myzt_001',
+            system_fingerprint: 'fp_zt_001',
             choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
             usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           })}\n\n`);
@@ -348,7 +348,7 @@ app.post('/v1/chat/completions', async (req: Request, res: Response) => {
         object: 'chat.completion',
         created,
         model,
-        system_fingerprint: 'fp_myzt_001',
+        system_fingerprint: 'fp_zt_001',
         choices: [{
           index: 0,
           message,
@@ -646,5 +646,5 @@ app.post('/v1/messages/count_tokens', (req: Request, res: Response) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log('My Zero Token: http://127.0.0.1:' + PORT);
+  console.log('Zero Token: http://127.0.0.1:' + PORT);
 });

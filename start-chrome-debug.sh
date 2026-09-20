@@ -1,5 +1,5 @@
 #!/bin/bash
-# 启动 Chrome 调试模式（用于 My Zero Token 连接）
+# 启动 Chrome 调试模式（用于 Zero Token 连接）
 # 兼容 macOS / Linux (含 Deepin) / Windows (Git Bash / WSL)
 # 单实例：若已有调试 Chrome 则先关闭再重启
 

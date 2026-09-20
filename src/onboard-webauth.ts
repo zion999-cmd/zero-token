@@ -1,5 +1,5 @@
 /**
- * My Zero Token — Web 模型授权向导
+ * Zero Token — Web 模型授权向导
  *
  * 独立实现，不依赖 openclaw-zero-token 的 config/chrome 模块。
  * 使用 Playwright CDP 连接到已运行的 Chrome 调试实例，
@@ -495,7 +495,7 @@ async function authProvider(
 
 async function main() {
   console.log("==========================================");
-  console.log("  My Zero Token — Web 模型授权向导");
+  console.log("  Zero Token — Web 模型授权向导");
   console.log("==========================================");
   console.log("");
 

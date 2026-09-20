@@ -1,5 +1,5 @@
 #!/bin/bash
-# OpenAI API Compliance Test — My Zero Token
+# OpenAI API Compliance Test — Zero Token
 # Usage: ./test-openai-api.sh [base_url] [api_key]
 # Default: http://127.0.0.1:3001, no auth
 
@@ -57,7 +57,7 @@ check "has id" '"id":"chatcmpl-' "$r"
 check "object=chat.completion" '"object":"chat.completion"' "$r"
 check "has created (unix ts)" '"created":' "$r"
 check "has model" "\"model\":\"$model\"" "$r"
-check "has system_fingerprint" '"system_fingerprint":"fp_myzt_' "$r"
+check "has system_fingerprint" '"system_fingerprint":"fp_zt_' "$r"
 check "choices array" '"choices":[' "$r"
 check "choices[0].index=0" '"index":0' "$r"
 check "message.role=assistant" '"role":"assistant"' "$r"

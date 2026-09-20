@@ -1,4 +1,4 @@
-# My Zero Token
+# Zero Token
 
 免 API Key 使用多种 LLM 的网关服务。通过 Chrome 调试模式获取浏览器登录态，将 Web LLM 平台封装为 **OpenAI Chat Completions / OpenAI Responses / Anthropic Messages 三种兼容 API**。
 
@@ -49,6 +49,8 @@ open http://127.0.0.1:3001
 ```
 
 首次使用后，已授权的模型 cookie 自动从 `.myzt-state/auth-profiles.json` 加载，无需手动输入。
+
+> **关于命名：** 项目现名 **Zero Token**。状态目录 `.myzt-state/`、环境变量前缀 `MYZT_*`（`MYZT_PORT` / `MYZT_HOST` / `MYZT_CDP_PORT`）与 Chrome 调试 profile 名 `myzt-debug` **保留历史前缀**——它们承载已有的授权登录态，改名会导致所有平台需要重新 onboard，故有意不动。
 
 > **Cookie 过期处理：** 运行 `./onboard.sh` 重新授权时，会自动通过 CDP 精确清除该提供商的过期 cookie 和 localStorage（不影响其他网站）。解决了部分平台（如 GLM）cookie 过期后页面无法退出/刷新的问题。
 
@@ -409,7 +411,7 @@ curl -X POST http://127.0.0.1:3001/v1/responses \
 - 支持 `developer` 角色（归入 system/instructions 层级，不降级为 user）
 - 上游流未正常结束（EOF 无 done）时状态为 `incomplete`（`incomplete_details.reason:"upstream_ended"`），不伪装 completed
 - 合规测试：`./test-responses-api.sh [base_url] [api_key]`
-- 归一化确定性单测（input_image 字符串形态、developer、tool output、终态判定）：`npm test`
+- 单元测试（vitest）：`npm test` —— 覆盖 Responses 归一化（input_image 字符串形态、developer 角色、tool output、终态判定）与各流工厂/豆包标签解析
 
 ### `GET /health`
 
@@ -499,7 +501,7 @@ auth-profiles.json → 网关自动加载 cookie/token
 ## 项目结构
 
 ```
-my-zero-token/
+zero-token/
   extensions/browser/src/browser/  # CDP/Chrome 桩 (零外部依赖)
   src/
     index.ts                       # Express 网关 (OpenAI 兼容 API)

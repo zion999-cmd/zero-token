@@ -1,10 +1,10 @@
 #!/bin/bash
-# My Zero Token — 初始化脚本
+# Zero Token — 初始化脚本
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "My Zero Token — 初始化"
+echo "Zero Token — 初始化"
 echo "======================"
 echo ""
 

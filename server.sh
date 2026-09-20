@@ -1,5 +1,5 @@
 #!/bin/bash
-# My Zero Token — Gateway 服务管理脚本
+# Zero Token — Gateway 服务管理脚本
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
