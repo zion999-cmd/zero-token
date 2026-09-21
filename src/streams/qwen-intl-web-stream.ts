@@ -30,7 +30,16 @@ export function createQwenIntlWebStreamFn(cookieOrJson: string): StreamFn {
   // Singleton: reuse client across requests to avoid Browser object leaks
   if (!clientPromise) {
     const client = new QwenIntlWebClientBrowser(options);
-    clientPromise = client.init().then(() => client);
+    clientPromise = client.init().then(
+      () => client,
+      (err: unknown) => {
+        // Never cache a failed init. A transient browser/CDP failure would
+        // otherwise leave this provider permanently broken (every later request
+        // awaits the same rejected promise) until the gateway restarts.
+        clientPromise = null;
+        throw err;
+      },
+    );
   }
 
   return (model, context, streamOptions) => {

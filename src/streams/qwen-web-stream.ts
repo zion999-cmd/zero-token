@@ -43,7 +43,16 @@ export function createQwenWebStreamFn(cookieOrJson: string): StreamFn {
   if (!clientPromise) {
     const options = parseOptions(cookieOrJson);
     const client = new QwenWebClientBrowser(options);
-    clientPromise = client.init().then(() => client);
+    clientPromise = client.init().then(
+      () => client,
+      (err: unknown) => {
+        // Never cache a failed init. A transient browser/CDP failure would
+        // otherwise leave this provider permanently broken (every later request
+        // awaits the same rejected promise) until the gateway restarts.
+        clientPromise = null;
+        throw err;
+      },
+    );
   }
 
   return (model, context, streamOptions) => {
